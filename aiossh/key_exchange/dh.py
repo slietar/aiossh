@@ -7,20 +7,21 @@ from cryptography.hazmat.primitives.asymmetric import dh
 from ..messages.kex_dh_gex import (KexDhGexGroupMessage, KexDhGexInitMessage,
                                    KexDhGexReplyMessage,
                                    KexDhGexRequestMessage)
-from ..messages.kex_init import KexInitMessage
 from ..prime import find_prime
-from ..structures.primitives import encode_mpint
+from ..structures.primitives import encode_mpint, encode_string
 
 if TYPE_CHECKING:
   from ..connection import Connection
 
 
+# See: RFC 4419
+
 async def run_kex_dh(
   conn: 'Connection',
   client_ident_string: bytes,
   server_ident_string: bytes,
-  client_kex_init: KexInitMessage,
-  server_kex_init: KexInitMessage
+  client_kex_init_payload: bytes,
+  server_kex_init_payload: bytes
 ):
   # Run key exchange
 
@@ -55,27 +56,32 @@ async def run_kex_dh(
   host_key = next(key for key in conn.server.host_keys if key.algorithm() == conn.algorithm_selection.server_host_key_algorithm)
 
   encoded_host_public_key = host_key.encode_public_key()
+  encoded_shared_secret = encode_mpint(int.from_bytes(shared_key))
 
-
-  signed_data =\
-      client_ident_string\
-    + server_ident_string\
-    + client_kex_init.encode_payload()\
-    + server_kex_init.encode_payload()\
-    + encoded_host_public_key\
+  data_to_hash =\
+      encode_string(client_ident_string)\
+    + encode_string(server_ident_string)\
+    + encode_string(client_kex_init_payload)\
+    + encode_string(server_kex_init_payload)\
+    + encode_string(encoded_host_public_key)\
     + struct.pack('>III', kex_dh_gex_request.min, kex_dh_gex_request.n, kex_dh_gex_request.max)\
     + encode_mpint(param_numbers.p)\
     + encode_mpint(param_numbers.g)\
     + encode_mpint(kex_dh_init.e)\
     + encode_mpint(server_f)\
-    + shared_key
+    + encoded_shared_secret
 
-  # print(xx.hex(' '))
+
+  exchange_hash = hashlib.sha256(data_to_hash).digest()
+  signature = host_key.sign_encode(exchange_hash)
 
   kex_dh_gex_reply = KexDhGexReplyMessage(
     host_key=encoded_host_public_key,
     f=server_f,
-    signature=hashlib.sha256(signed_data).digest()
+    signature=signature
   )
 
   conn.write_message(kex_dh_gex_reply)
+
+
+  return exchange_hash, shared_key

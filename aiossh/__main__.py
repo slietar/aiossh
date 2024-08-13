@@ -11,7 +11,7 @@ from .host_key import ECDSAHostKey, ED25519HostKey, HostKey
 from .server import Server
 
 
-print('PID', os.getpid())
+# print('PID', os.getpid())
 
 async def main():
   host_keys_path = Path('tmp/keys.pkl')
@@ -30,7 +30,7 @@ async def main():
     with host_keys_path.open('wb') as file:
       pickle.dump(host_keys, file)
 
-  pprint(host_keys)
+  # pprint(host_keys)
   server = Server(host_keys=host_keys)
 
   task = asyncio.create_task(server.serve('127.0.0.1', 1302))
