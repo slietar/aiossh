@@ -1,30 +1,36 @@
 import asyncio
 import os
+import pickle
 import signal
-from asyncio import StreamReader, StreamWriter
+from pathlib import Path
 
-from .connection import Connection
+from cryptography.hazmat.primitives.asymmetric import ed25519
+
+from .host_key import ED25519HostKey, HostKey
+from .server import Server
 
 
 print('PID', os.getpid())
 
-async def serve():
-  async def handle_connection_sync(reader: StreamReader, writer: StreamWriter):
-    conn = Connection(reader, writer)
-    await conn.handle()
-
-  server = await asyncio.start_server(
-    handle_connection_sync,
-    ['127.0.0.1'],
-    port=1302
-  )
-
-  await server.serve_forever()
-
-
 async def main():
-  task = asyncio.create_task(serve())
+  host_keys_path = Path('tmp/keys.pkl')
 
+  if host_keys_path.exists():
+    with host_keys_path.open('rb') as file:
+      host_keys: list[HostKey] = pickle.load(file)
+  else:
+    host_keys: list[HostKey] = [
+      ED25519HostKey(ed25519.Ed25519PrivateKey.generate())
+    ]
+
+    host_keys_path.parent.mkdir(exist_ok=True, parents=True)
+
+    with host_keys_path.open('wb') as file:
+      pickle.dump(host_keys, file)
+
+  server = Server(host_keys=host_keys)
+
+  task = asyncio.create_task(server.serve('127.0.0.1', 1302))
   loop = asyncio.get_event_loop()
 
   for sig in [signal.SIGINT, signal.SIGTERM]:

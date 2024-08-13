@@ -2,7 +2,9 @@ import struct
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ..structures import decode_mpint, encode_mpint, encode_string
+from .base import EncodableMessage
+
+from ..structures.primitives import decode_mpint, encode_mpint, encode_string
 from ..util import ReadableBytesIO
 
 
@@ -30,7 +32,7 @@ class KexDhGexRequestMessage:
 # Server-only
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class KexDhGexGroupMessage:
+class KexDhGexGroupMessage(EncodableMessage):
   id: ClassVar[int] = 31
 
   p: int
@@ -56,7 +58,7 @@ class KexDhGexInitMessage:
 # Server-only
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class KexDhGexReplyMessage:
+class KexDhGexReplyMessage(EncodableMessage):
   id: ClassVar[int] = 33
 
   host_key: bytes

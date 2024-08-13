@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from .base import EncodableMessage
-from ..structures import decode_name_list, encore_name_list
+from ..structures.primitives import decode_name_list, encore_name_list
 from ..util import ReadableBytesIO
 
 
