@@ -15,7 +15,7 @@ class ReadableBytesIOImpl:
 
   def read(self, byte_count: int, /):
     if self.position + byte_count > len(self.data):
-      raise ProtocolError(f'Expected {byte_count} bytes')
+      raise ProtocolError(f'Expected {byte_count} bytes, found {len(self.data) - self.position}')
 
     view = self.data[self.position:(self.position + byte_count)]
     self.position += byte_count

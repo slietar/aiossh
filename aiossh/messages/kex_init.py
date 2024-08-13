@@ -1,14 +1,18 @@
 import os
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
 
 from ..structures import decode_name_list, encore_name_list
 from ..util import ReadableBytesIO
 
 
+# Client & server
+
 @dataclass(frozen=True, kw_only=True, slots=True)
-class KexPacket:
+class KexInitMessage:
+  id: ClassVar[int] = 20
+
   kex_algorithms: list[str]
   server_host_key_algorithms: list[str]
   encryption_algorithms_client_to_server: list[str]
@@ -20,8 +24,6 @@ class KexPacket:
   languages_client_to_server: list[str]
   languages_server_to_client: list[str]
   first_kex_packet_follows: bool
-
-  id: ClassVar[int] = 20
 
   def encode(self):
     return os.urandom(16)\
