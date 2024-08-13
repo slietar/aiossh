@@ -3,6 +3,7 @@ import struct
 from dataclasses import dataclass
 from typing import ClassVar
 
+from .base import EncodableMessage
 from ..structures import decode_name_list, encore_name_list
 from ..util import ReadableBytesIO
 
@@ -10,7 +11,7 @@ from ..util import ReadableBytesIO
 # Client & server
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class KexInitMessage:
+class KexInitMessage(EncodableMessage):
   id: ClassVar[int] = 20
 
   kex_algorithms: list[str]

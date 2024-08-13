@@ -2,6 +2,7 @@ import struct
 from dataclasses import dataclass
 from typing import ClassVar
 
+from ..structures import decode_mpint, encode_mpint, encode_string
 from ..util import ReadableBytesIO
 
 
@@ -36,4 +37,31 @@ class KexDhGexGroupMessage:
   g: int
 
   def encode(self):
-    return struct.pack('>II', self.p, self.g)
+    return encode_mpint(self.p) + encode_mpint(self.g)
+
+
+# Client-only
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class KexDhGexInitMessage:
+  id: ClassVar[int] = 32
+
+  e: int
+
+  @classmethod
+  def decode(cls, reader: ReadableBytesIO):
+    return cls(e=decode_mpint(reader))
+
+
+# Server-only
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class KexDhGexReplyMessage:
+  id: ClassVar[int] = 33
+
+  host_key: bytes
+  f: int
+  signature: bytes
+
+  def encode(self):
+    return encode_string(self.host_key) + encode_mpint(self.f) + encode_string(self.signature)
