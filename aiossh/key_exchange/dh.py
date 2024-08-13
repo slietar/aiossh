@@ -52,7 +52,7 @@ async def run_kex_dh(
   shared_key = server_private_key.exchange(client_public_key)
 
   assert conn.algorithm_selection is not None
-  host_key = next(key for key in conn.server.host_keys if key.algorithm == conn.algorithm_selection.server_host_key_algorithm)
+  host_key = next(key for key in conn.server.host_keys if key.algorithm() == conn.algorithm_selection.server_host_key_algorithm)
 
   encoded_host_public_key = host_key.encode_public_key()
 

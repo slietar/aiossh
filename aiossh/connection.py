@@ -128,7 +128,7 @@ class Connection:
 
       server_kex_init = KexInitMessage(
         kex_algorithms=['diffie-hellman-group-exchange-sha256'],
-        server_host_key_algorithms=['ssh-ed25519'],
+        server_host_key_algorithms=list(set(key.algorithm() for key in self.server.host_keys)),
         encryption_algorithms_client_to_server=['aes128-ctr'],
         encryption_algorithms_server_to_client=['aes128-ctr'],
         mac_algorithms_client_to_server=['hmac-sha2-256'],
@@ -189,6 +189,9 @@ class Connection:
         raise ProtocolError('Expected Kex packet')
 
       self.algorithm_selection = negotiate_algorithms(client_kex_init, server_kex_init)
+
+      # from pprint import pprint
+      # pprint(client_kex_init)
 
 
       # Run key exchange

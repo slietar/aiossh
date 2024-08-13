@@ -1,12 +1,13 @@
 import asyncio
 import os
 import pickle
+from pprint import pprint
 import signal
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
-from .host_key import ED25519HostKey, HostKey
+from .host_key import ECDSAHostKey, ED25519HostKey, HostKey
 from .server import Server
 
 
@@ -20,7 +21,8 @@ async def main():
       host_keys: list[HostKey] = pickle.load(file)
   else:
     host_keys: list[HostKey] = [
-      ED25519HostKey(ed25519.Ed25519PrivateKey.generate())
+      ED25519HostKey(ed25519.Ed25519PrivateKey.generate()),
+      ECDSAHostKey(ec.generate_private_key(ec.SECP256R1())),
     ]
 
     host_keys_path.parent.mkdir(exist_ok=True, parents=True)
@@ -28,6 +30,7 @@ async def main():
     with host_keys_path.open('wb') as file:
       pickle.dump(host_keys, file)
 
+  pprint(host_keys)
   server = Server(host_keys=host_keys)
 
   task = asyncio.create_task(server.serve('127.0.0.1', 1302))
