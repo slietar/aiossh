@@ -1,5 +1,16 @@
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from typing import ClassVar, Self
+
+from ..util import ReadableBytesIO
+
+
+class DecodableMessage(ABC):
+  id: ClassVar[int]
+
+  @classmethod
+  @abstractmethod
+  def decode(cls, reader: ReadableBytesIO) -> Self:
+    ...
 
 
 class EncodableMessage(ABC):

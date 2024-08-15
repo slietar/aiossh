@@ -1,8 +1,11 @@
 import hashlib
+import math
 import struct
 from asyncio import StreamReader, StreamWriter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
+
+from .encryption.aes import AESCTREncryption
 
 from .error import ProtocolError
 from .key_exchange.dh import run_kex_dh
@@ -24,6 +27,7 @@ SSH_PROTOCOL_VERSION = '2.0'
 
 message_classes = [
   KexInitMessage,
+  NewKeysMessage,
 
   KexDhGexRequestMessage,
   KexDhGexGroupMessage,
@@ -59,7 +63,7 @@ def negotiate_algorithms(client: KexInitMessage, server: KexInitMessage):
   )
 
 
-@dataclass(slots=True)
+@dataclass(repr=False, slots=True)
 class Connection:
   server: 'Server'
 
@@ -67,10 +71,42 @@ class Connection:
   writer: StreamWriter
 
   algorithm_selection: Optional[AlgorithmSelection] = field(default=None, init=False)
+  encryption: Optional[AESCTREncryption] = field(default=None, init=False)
   session_id: Optional[bytes] = None
+
+  # Buffer of decrypted data
+  buffer: bytes = field(default=b'', init=False)
 
 
   async def read(self, byte_count: int, /):
+    if self.buffer:
+      data = self.buffer[:byte_count]
+      self.buffer = self.buffer[len(data):]
+
+      missing_byte_count = byte_count - len(data)
+
+      if missing_byte_count > 0:
+        return data + await self.read_raw(missing_byte_count)
+      else:
+        return data
+
+      # return self.buffer + await self.read(byte_count - len(self.buffer))
+
+    if self.encryption is not None:
+      block_size = self.encryption.block_size()
+
+      block_count = math.ceil(byte_count / block_size)
+
+      for _ in range(block_count):
+        self.buffer += self.encryption.decrypt(await self.read_raw(block_size))
+
+      data = self.buffer[:byte_count]
+      self.buffer = self.buffer[byte_count:]
+      return data
+    else:
+      return await self.read_raw(byte_count)
+
+  async def read_raw(self, byte_count: int, /):
     data = bytes()
 
     while len(data) < byte_count:
@@ -218,9 +254,13 @@ class Connection:
 
       encoded_shared_secret = encode_mpint(int.from_bytes(shared_key))
 
-      def derive(x: bytes):
-        # TODO: Use same algorithm as for key exchange
-        return hashlib.sha256(encoded_shared_secret + exchange_hash + x * len(exchange_hash)).digest()
+      # TODO: Use same algorithm as for key exchange
+      def hash(x: bytes):
+        return hashlib.sha256(x).digest()
+
+      def derive(letter: bytes):
+        assert self.session_id is not None
+        return hash(encoded_shared_secret + exchange_hash + letter + self.session_id)
 
       iv_client_to_server = derive(b'A')
       iv_server_to_client = derive(b'B')
@@ -229,12 +269,52 @@ class Connection:
       integrity_key_client_to_server = derive(b'E')
       integrity_key_server_to_client = derive(b'F')
 
+      def derive_n(letter: bytes, size: int):
+        key = derive(letter)
+
+        while len(key) < size:
+          key += hash(encoded_shared_secret + exchange_hash + key)
+
+        return key[:size]
+
       self.write_message(NewKeysMessage())
+      assert isinstance(await self.read_message(), NewKeysMessage)
 
 
       # Do other stuff
 
-      # print(await self.read_message())
+      self.encryption = AESCTREncryption(
+        key=derive_n(b'C', 16),
+        iv=derive_n(b'A', 16)
+      )
+
+      print(await self.read_message())
+
+      # packet = bytes()
+
+      # for _ in range(4):
+      #   x = await self.read(16)
+      #   packet += enc.decrypt(x)
+
+      # def a():
+      #   nonlocal packet
+
+      #   packet_length = struct.unpack('>I', packet[:4])[0]
+      #   packet = packet[4:]
+
+      #   padding_length = packet[0]
+      #   payload_length = packet_length - padding_length - 1
+
+      #   payload = packet[1:(1 + payload_length)]
+      #   payload_io = ReadableBytesIOImpl(payload[1:])
+
+      #   # TODO: Checks on lengths
+
+      #   message_type = payload[0]
+      #   print(message_type)
+
+      # print(packet.hex(' '))
+      # a()
 
     finally:
       self.writer.close()
