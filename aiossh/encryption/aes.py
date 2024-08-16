@@ -1,17 +1,22 @@
 from dataclasses import dataclass
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers import Cipher, CipherContext, algorithms, modes
 
 
-@dataclass(slots=True)
+# See: RFC 4344
+
+@dataclass (slots=True)
 class AESCTREncryption:
   cipher: Cipher
+  decryptor: CipherContext
 
   def __init__(self, key: bytes, iv: bytes):
     self.cipher = Cipher(algorithms.AES(key), modes.CTR(iv))
+    self.decryptor = self.cipher.decryptor()
 
   def block_size(self):
     return 16
 
   def decrypt(self, data: bytes):
-    decryptor = self.cipher.decryptor()
-    return decryptor.update(data) + decryptor.finalize()
+    assert len(data) % self.block_size() == 0
+    # decryptor = self.cipher.decryptor()
+    return self.decryptor.update(data)

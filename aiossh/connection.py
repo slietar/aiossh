@@ -3,7 +3,10 @@ import math
 import struct
 from asyncio import StreamReader, StreamWriter
 from dataclasses import dataclass, field
+import sys
 from typing import TYPE_CHECKING, Optional
+
+from .integrity.hmac import HMACSHA1IntegrityVerification, HMACSHA256IntegrityVerification
 
 from .encryption.aes import AESCTREncryption
 
@@ -72,6 +75,10 @@ class Connection:
 
   algorithm_selection: Optional[AlgorithmSelection] = field(default=None, init=False)
   encryption: Optional[AESCTREncryption] = field(default=None, init=False)
+  integrity_verification: Optional[HMACSHA1IntegrityVerification] = field(default=None, init=False)
+
+  sequence_number_client_to_server: int = field(default=0, init=False)
+  sequence_number_server_to_client: int = field(default=0, init=False)
   session_id: Optional[bytes] = None
 
   # Buffer of decrypted data
@@ -79,6 +86,7 @@ class Connection:
 
 
   async def read(self, byte_count: int, /):
+    raise Exception
     if self.buffer:
       data = self.buffer[:byte_count]
       self.buffer = self.buffer[len(data):]
@@ -86,11 +94,11 @@ class Connection:
       missing_byte_count = byte_count - len(data)
 
       if missing_byte_count > 0:
-        return data + await self.read_raw(missing_byte_count)
+        x = await self.read_unencrypted(missing_byte_count)
+        print('Decrypt', x.hex())
+        return data + self.encryption.decrypt(x)
       else:
         return data
-
-      # return self.buffer + await self.read(byte_count - len(self.buffer))
 
     if self.encryption is not None:
       block_size = self.encryption.block_size()
@@ -98,15 +106,19 @@ class Connection:
       block_count = math.ceil(byte_count / block_size)
 
       for _ in range(block_count):
-        self.buffer += self.encryption.decrypt(await self.read_raw(block_size))
+        x = await self.read_unencrypted(block_size)
+        print('Decrypt', x.hex())
+
+        self.buffer += self.encryption.decrypt(x)
+        # self.buffer += self.encryption.decrypt(await self.read_unecrypted(block_size))
 
       data = self.buffer[:byte_count]
       self.buffer = self.buffer[byte_count:]
       return data
     else:
-      return await self.read_raw(byte_count)
+      return await self.read_unencrypted(byte_count)
 
-  async def read_raw(self, byte_count: int, /):
+  async def read_unencrypted(self, byte_count: int, /):
     data = bytes()
 
     while len(data) < byte_count:
@@ -125,10 +137,31 @@ class Connection:
     return message
 
   async def read_message_and_payload(self):
+    if self.encryption is not None:
+      sized_packet = self.encryption.decrypt(await self.read_unencrypted(self.encryption.block_size()))
+    else:
+      sized_packet = await self.read_unencrypted(4)
+
     # See: RFC 4253 Section 6
 
-    packet_length = struct.unpack('>I', await self.read(4))[0]
-    packet = await self.read(packet_length)
+    packet_length_bytes = sized_packet[:4]
+    packet_length = struct.unpack('>I', packet_length_bytes)[0]
+
+    if self.encryption is not None:
+      missing_block_count = (packet_length + 4) // self.encryption.block_size() - 1
+      sized_packet += self.encryption.decrypt(await self.read_unencrypted(self.encryption.block_size() * missing_block_count))
+      packet = sized_packet[4:]
+    else:
+      packet = await self.read_unencrypted(packet_length)
+      sized_packet += packet
+
+
+    # packet_length_bytes = await self.read(4)
+    # packet_length = struct.unpack('>I', packet_length_bytes)[0]
+    # packet = await self.read(packet_length)
+    print('Packet', (packet_length_bytes + packet).hex())
+    # print(packet)
+    # print('Packet length', len(packet), packet_length)
 
     padding_length = packet[0]
     payload_length = packet_length - padding_length - 1
@@ -138,6 +171,25 @@ class Connection:
 
     # TODO: Checks on lengths
 
+    # See: RFC 4253 Section 6.4
+
+    if self.integrity_verification is not None:
+      digest = await self.read_unencrypted(self.integrity_verification.digest_size())
+      # print('Digest', digest.hex())
+      # print('Data', (struct.pack('>I', self.sequence_number_client_to_server) + packet_length_bytes + packet).hex())
+      # print('Key', self.integrity_verification.key.hex())
+
+      # x = self.integrity_verification.verify(struct.pack('>I', self.sequence_number_client_to_server) + packet_length_bytes + packet)
+      x = self.integrity_verification.verify(struct.pack('>I', self.sequence_number_client_to_server) + sized_packet)
+      # print(len(packet_length_bytes + packet))
+      # print((packet_length_bytes + packet).hex(' '))
+      print('>', digest.hex(' '))
+      print('>', x.hex(' '))
+      print()
+      print(packet.hex(' '))
+
+    self.sequence_number_client_to_server += 1
+
     message_type = payload[0]
 
     for message_class in message_classes:
@@ -145,8 +197,6 @@ class Connection:
         return message_class.decode(payload_io), payload
 
     raise ProtocolError(f'Unknown packet type {message_type}')
-
-    # TODO: Possibly read MAC
 
   def write_message(self, message: EncodableMessage):
     self.writer.write(encode_packet(message.encode_payload()))
@@ -166,7 +216,8 @@ class Connection:
         server_host_key_algorithms=list(set(key.algorithm() for key in self.server.host_keys)),
         encryption_algorithms_client_to_server=['aes128-ctr'],
         encryption_algorithms_server_to_client=['aes128-ctr'],
-        mac_algorithms_client_to_server=['hmac-sha2-256'],
+        mac_algorithms_client_to_server=['hmac-sha1'],
+        # mac_algorithms_client_to_server=['hmac-sha2-256'],
         mac_algorithms_server_to_client=['hmac-sha2-256'],
         compression_algorithms_client_to_server=['none'],
         compression_algorithms_server_to_client=['none'],
@@ -262,12 +313,12 @@ class Connection:
         assert self.session_id is not None
         return hash(encoded_shared_secret + exchange_hash + letter + self.session_id)
 
-      iv_client_to_server = derive(b'A')
-      iv_server_to_client = derive(b'B')
-      encryption_key_client_to_server = derive(b'C')
-      encryption_key_server_to_client = derive(b'D')
-      integrity_key_client_to_server = derive(b'E')
-      integrity_key_server_to_client = derive(b'F')
+      # iv_client_to_server = derive(b'A')
+      # iv_server_to_client = derive(b'B')
+      # encryption_key_client_to_server = derive(b'C')
+      # encryption_key_server_to_client = derive(b'D')
+      # integrity_key_client_to_server = derive(b'E')
+      # integrity_key_server_to_client = derive(b'F')
 
       def derive_n(letter: bytes, size: int):
         key = derive(letter)
@@ -286,6 +337,14 @@ class Connection:
       self.encryption = AESCTREncryption(
         key=derive_n(b'C', 16),
         iv=derive_n(b'A', 16)
+      )
+
+      print('Key', derive_n(b'C', 16).hex())
+      print('IV', derive_n(b'A', 16).hex())
+
+      # self.integrity_verification = HMACSHA256IntegrityVerification(
+      self.integrity_verification = HMACSHA1IntegrityVerification(
+        key=derive_n(b'E', HMACSHA1IntegrityVerification.key_size())
       )
 
       print(await self.read_message())

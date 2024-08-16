@@ -6,6 +6,8 @@ import struct
 MIN_PADDING = 4
 
 def encode_packet(payload: bytes):
+  # TODO: Add padding for encryption block size
+
   padding_length = 0
 
   len_base = len(payload) + 5
