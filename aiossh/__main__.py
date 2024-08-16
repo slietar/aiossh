@@ -1,15 +1,18 @@
 import asyncio
 import os
 import pickle
-from pprint import pprint
 import signal
 from pathlib import Path
+from pprint import pprint
 
+import dexc
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
 from .host_key import ECDSAHostKey, ED25519HostKey, HostKey
 from .server import Server
 
+
+dexc.install()
 
 # print('PID', os.getpid())
 

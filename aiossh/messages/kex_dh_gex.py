@@ -11,7 +11,7 @@ from ..util import ReadableBytesIO
 # Client-only
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class KexDhGexRequestMessage:
+class KexDhGexRequestMessage(DecodableMessage):
   id: ClassVar[int] = 34
 
   min: int

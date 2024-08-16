@@ -68,7 +68,6 @@ class ECDSAHostKey(HostKey):
     # See: RFC 5656 Section 6.2.1
 
     curve_size = self.private_key.curve.key_size
-    print('>', curve_size)
 
     if curve_size <= 256:
       hash_algorithm = hashes.SHA256()
