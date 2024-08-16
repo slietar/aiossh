@@ -15,3 +15,6 @@ class Encryption(Protocol):
 
   def decrypt_blocks(self, data: bytes, /) -> bytes:
     ...
+
+  def encrypt_blocks(self, data: bytes, /) -> bytes:
+    ...

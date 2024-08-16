@@ -17,9 +17,11 @@ from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import EncodableMessage
 from .messages.kex_init import KexInitMessage
-from .messages.misc import NewKeysMessage
+from .messages.misc import (NewKeysMessage, ServiceAcceptMessage,
+                            ServiceRequestMessage)
 from .packet import encode_packet
 from .structures.primitives import encode_mpint
+from .util import ReadableBytesIOImpl
 
 if TYPE_CHECKING:
   from .server import Server
@@ -80,8 +82,8 @@ class Connection:
   integrity_verification_in: Optional[IntegrityVerification] = field(default=None, init=False)
   integrity_verification_out: Optional[IntegrityVerification] = field(default=None, init=False)
 
-  sequence_number_client_to_server: int = field(default=0, init=False)
-  sequence_number_server_to_client: int = field(default=0, init=False)
+  sequence_number_in: int = field(default=0, init=False)
+  sequence_number_out: int = field(default=0, init=False)
   session_id: Optional[bytes] = None
 
   key_exchange_flow: Optional[MessageFlow] = None
@@ -138,7 +140,7 @@ class Connection:
     if self.integrity_verification_in is not None:
       expected_digest = await self.read(self.integrity_verification_in.digest_size())
 
-      produced_digest = self.integrity_verification_in.produce(struct.pack('>I', self.sequence_number_client_to_server) + sized_packet)
+      produced_digest = self.integrity_verification_in.produce(struct.pack('>I', self.sequence_number_in) + sized_packet)
 
       if expected_digest != produced_digest:
         raise ProtocolError('Integrity verification failure')
@@ -146,12 +148,27 @@ class Connection:
 
     # Return payload
 
-    self.sequence_number_client_to_server += 1
+    self.sequence_number_in += 1
 
     return payload
 
   def write_message(self, message: EncodableMessage):
-    self.writer.write(encode_packet(message.encode_payload()))
+    payload = message.encode_payload()
+    sized_packet = encode_packet(payload, block_size=(self.encryption_out.block_size() if self.encryption_out else None))
+
+    if self.encryption_out is not None:
+      self.writer.write(self.encryption_out.encrypt_blocks(sized_packet))
+    else:
+      self.writer.write(sized_packet)
+
+    if self.integrity_verification_out is not None:
+      # print(sized_packet.hex(' '))
+      self.writer.write(self.integrity_verification_out.produce(struct.pack('>I', self.sequence_number_out) + sized_packet))
+
+    self.sequence_number_out += 1
+
+    # Return payload because the KexInit message payload is reused for key exchange
+    return payload
 
 
   async def run_key_exchange(self):
@@ -170,7 +187,7 @@ class Connection:
       encryption_algorithms_server_to_client=['aes128-ctr'],
       mac_algorithms_client_to_server=['hmac-sha1'],
       # mac_algorithms_client_to_server=['hmac-sha2-256'],
-      mac_algorithms_server_to_client=['hmac-sha2-256'],
+      mac_algorithms_server_to_client=['hmac-sha1'],
       compression_algorithms_client_to_server=['none'],
       compression_algorithms_server_to_client=['none'],
       languages_client_to_server=[],
@@ -178,8 +195,7 @@ class Connection:
       first_kex_packet_follows=False
     )
 
-    server_kex_init_payload = server_kex_init.encode_payload()
-    self.writer.write(encode_packet(server_kex_init_payload))
+    server_kex_init_payload = self.write_message(server_kex_init)
 
 
     # Read client KexInit message
@@ -238,7 +254,7 @@ class Connection:
       iv=derive_key(b'B', EncryptionOut.block_size())
     )
 
-    IntegrityVerificationOut = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_client_to_server)
+    IntegrityVerificationOut = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_server_to_client)
 
     self.integrity_verification_out = IntegrityVerificationOut(
       key=derive_key(b'F', IntegrityVerificationOut.key_size())
@@ -266,7 +282,6 @@ class Connection:
     # Finish flow
 
     self.key_exchange_flow = None
-    print('Done')
 
 
   async def handle(self):
@@ -309,11 +324,21 @@ class Connection:
 
               assert self.key_exchange_flow is not None
               self.key_exchange_flow.feed(message_id, message_payload)
+
             case _ if (message_id == NewKeysMessage.id) or (30 <= message_id <= 49):
               if self.key_exchange_flow is None:
                 raise ProtocolError
 
               self.key_exchange_flow.feed(message_id, message_payload)
+
+            case ServiceRequestMessage.id:
+              message_payload_io = ReadableBytesIOImpl(message_payload[1:])
+              service_request = ServiceRequestMessage.decode(message_payload_io)
+
+              match service_request.service_name:
+                case b'ssh-userauth':
+                  self.write_message(ServiceAcceptMessage(service_name=service_request.service_name))
+
             case _:
               raise ProtocolError(f'Unknown message id {message_id}')
 

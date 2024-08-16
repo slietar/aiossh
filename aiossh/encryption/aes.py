@@ -10,10 +10,13 @@ from .base import Encryption
 class AESCTREncryption(Encryption):
   cipher: Cipher
   decryptor: CipherContext
+  encryptor: CipherContext
 
   def __init__(self, key: bytes, iv: bytes):
     self.cipher = Cipher(algorithms.AES(key), modes.CTR(iv))
+
     self.decryptor = self.cipher.decryptor()
+    self.encryptor = self.cipher.encryptor()
 
   @staticmethod
   def block_size():
@@ -21,8 +24,11 @@ class AESCTREncryption(Encryption):
 
   def decrypt_blocks(self, data: bytes, /):
     assert len(data) % self.block_size() == 0
-    # decryptor = self.cipher.decryptor()
     return self.decryptor.update(data)
+
+  def encrypt_blocks(self, data: bytes, /):
+    assert len(data) % self.block_size() == 0
+    return self.encryptor.update(data)
 
 
 class AES128CTREncryption(AESCTREncryption):
