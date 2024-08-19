@@ -16,6 +16,8 @@ from .integrity.base import IntegrityVerification
 from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import EncodableMessage
+from .messages.channel import (ChannelOpenConfirmationMessage,
+                               ChannelOpenMessage)
 from .messages.kex_init import KexInitMessage
 from .messages.misc import (NewKeysMessage, ServiceAcceptMessage,
                             ServiceRequestMessage)
@@ -348,8 +350,11 @@ class Connection:
               service_request = ServiceRequestMessage.decode(message_payload_io)
 
               match service_request.service_name:
-                case b'ssh-userauth':
+                case 'ssh-userauth':
                   self.write_message(ServiceAcceptMessage(service_name=service_request.service_name))
+                case _:
+                  # TODO: Send correct error message
+                  raise ProtocolError(f'Unsupported service name: {service_request.service_name!r}')
 
             case UserAuthRequestMessage.id:
               if self.user_auth_flow is not None:
@@ -359,6 +364,15 @@ class Connection:
 
               assert self.user_auth_flow is not None
               await self.user_auth_flow.feed(message_id, message_payload)
+
+            case ChannelOpenMessage.id:
+              msg = ChannelOpenMessage.decode(ReadableBytesIOImpl(message_payload[1:]))
+
+              self.write_message(ChannelOpenConfirmationMessage(ChannelOpenMessage(
+                max_packet_size=msg.max_packet_size,
+                sender_channel_id=msg.sender_channel_id,
+                window_size=msg.window_size
+              ), recipient_channel_id=0))
 
             case _:
               raise ProtocolError(f'Unknown message id {message_id}')

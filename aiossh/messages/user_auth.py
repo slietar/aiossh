@@ -1,3 +1,4 @@
+from abc import ABC
 import struct
 from dataclasses import KW_ONLY, dataclass
 from typing import ClassVar, Optional
@@ -15,7 +16,7 @@ from .types import LanguageTag
 # See: RFC 4252
 
 @dataclass(slots=True)
-class UserAuthRequestMessage(DecodableMessage):
+class UserAuthRequestMessage(DecodableMessage, ABC):
   id: ClassVar[int] = 50
 
   service_name: str
@@ -133,7 +134,7 @@ class UserAuthBannerMessage(EncodableMessage):
   language_tag: LanguageTag
 
   def encode(self):
-    return encode_string(self.message.encode()) + encode_string(self.language_tag.encode('ascii'))
+    return encode_string(self.message.encode()) + encode_name(self.language_tag)
 
 @dataclass(slots=True)
 class UserAuthPasswordChangeRequestMessage(EncodableMessage):
@@ -144,7 +145,7 @@ class UserAuthPasswordChangeRequestMessage(EncodableMessage):
   language_tag: LanguageTag
 
   def encode(self):
-    return encode_string(self.prompt.encode()) + encode_string(self.language_tag.encode('ascii'))
+    return encode_string(self.prompt.encode()) + encode_name(self.language_tag)
 
 @dataclass(kw_only=True, slots=True)
 class UserAuthPublicKeyOk(EncodableMessage):

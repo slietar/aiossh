@@ -62,7 +62,7 @@ def decode_name(reader: ReadableBytesIO):
     raise ProtocolError from e
 
 
-def encode_text(value: str):
+def encode_text(value: str, /):
   return encode_string(value.encode())
 
 def decode_text(reader: ReadableBytesIO):
@@ -72,6 +72,13 @@ def decode_text(reader: ReadableBytesIO):
     return data.decode()
   except UnicodeDecodeError as e:
     raise ProtocolError from e
+
+
+def encode_uint32(value: int, /):
+  return struct.pack('>I', value)
+
+def decode_uint32(reader: ReadableBytesIO):
+  return struct.unpack('>I', reader.read(4))[0]
 
 
 if __name__ == '__main__':

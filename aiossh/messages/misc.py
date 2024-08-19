@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ..structures.primitives import decode_string, encode_string
+from ..structures.primitives import decode_name, encode_name
 from ..util import ReadableBytesIO
 from .base import DecodableMessage, EncodableMessage
 
@@ -18,22 +18,24 @@ class NewKeysMessage(DecodableMessage, EncodableMessage):
     return cls()
 
 
+# See: RFC 4253 Section 10
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ServiceRequestMessage(DecodableMessage):
   id: ClassVar[int] = 5
 
-  service_name: bytes
+  service_name: str
 
   @classmethod
   def decode(cls, reader: ReadableBytesIO):
-    return cls(service_name=decode_string(reader))
+    return cls(service_name=decode_name(reader))
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ServiceAcceptMessage(EncodableMessage):
   id: ClassVar[int] = 6
 
-  service_name: bytes
+  service_name: str
 
   def encode(self):
-    return encode_string(self.service_name)
+    return encode_name(self.service_name)
