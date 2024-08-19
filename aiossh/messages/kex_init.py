@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from .base import DecodableMessage, EncodableMessage
-from ..structures.primitives import decode_name_list, encore_name_list
+from ..structures.primitives import decode_name_list, encode_boolean, encode_name_list
 from ..util import ReadableBytesIO
 
 
@@ -28,24 +28,25 @@ class KexInitMessage(DecodableMessage, EncodableMessage):
 
   def encode(self):
     return os.urandom(16)\
-      + encore_name_list(self.kex_algorithms)\
-      + encore_name_list(self.server_host_key_algorithms)\
-      + encore_name_list(self.encryption_algorithms_client_to_server)\
-      + encore_name_list(self.encryption_algorithms_server_to_client)\
-      + encore_name_list(self.mac_algorithms_client_to_server)\
-      + encore_name_list(self.mac_algorithms_server_to_client)\
-      + encore_name_list(self.compression_algorithms_client_to_server)\
-      + encore_name_list(self.compression_algorithms_server_to_client)\
-      + encore_name_list(self.languages_client_to_server)\
-      + encore_name_list(self.languages_server_to_client)\
-      + struct.pack('>?I', False, 0)
+      + encode_name_list(self.kex_algorithms)\
+      + encode_name_list(self.server_host_key_algorithms)\
+      + encode_name_list(self.encryption_algorithms_client_to_server)\
+      + encode_name_list(self.encryption_algorithms_server_to_client)\
+      + encode_name_list(self.mac_algorithms_client_to_server)\
+      + encode_name_list(self.mac_algorithms_server_to_client)\
+      + encode_name_list(self.compression_algorithms_client_to_server)\
+      + encode_name_list(self.compression_algorithms_server_to_client)\
+      + encode_name_list(self.languages_client_to_server)\
+      + encode_name_list(self.languages_server_to_client)\
+      + encode_boolean(False)\
+      + struct.pack('>I', 0)
 
 
   @classmethod
   def decode(cls, reader: ReadableBytesIO):
     reader.read(16)
 
-    return cls(
+    message = cls(
       kex_algorithms=decode_name_list(reader),
       server_host_key_algorithms=decode_name_list(reader),
       encryption_algorithms_client_to_server=decode_name_list(reader),
@@ -58,3 +59,7 @@ class KexInitMessage(DecodableMessage, EncodableMessage):
       languages_server_to_client=decode_name_list(reader),
       first_kex_packet_follows=struct.unpack('>?', reader.read(1))[0]
     )
+
+    reader.read(4)
+
+    return message

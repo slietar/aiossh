@@ -7,7 +7,7 @@ from ..util import ReadableBytesIO, ReadableBytesIOImpl
 
 # See: RFC 4251 Section 5
 
-def encore_name_list(names: list[str], /):
+def encode_name_list(names: list[str], /):
   encoded = ','.join(names).encode('ascii')
   return struct.pack('>I', len(encoded)) + encoded
 
@@ -26,8 +26,11 @@ def decode_name_list(reader: ReadableBytesIO):
   return decoded.split(',')
 
 
+def encode_boolean(value: bool, /):
+  return b'\x01' if value else b'\x00'
+
 def decode_boolean(reader: ReadableBytesIO):
-  return bool(reader.read(1)[0]) # TODO: Check
+  return reader.read(1)[0] != 0x00
 
 
 def encode_mpint(value: int, /):
@@ -45,6 +48,30 @@ def encode_string(value: bytes, /):
 def decode_string(reader: ReadableBytesIO):
   length: int = struct.unpack('>I', reader.read(4))[0]
   return reader.read(length)
+
+
+def encode_name(value: str):
+  return encode_string(value.encode('ascii'))
+
+def decode_name(reader: ReadableBytesIO):
+  data = decode_string(reader)
+
+  try:
+    return data.decode('ascii')
+  except UnicodeDecodeError as e:
+    raise ProtocolError from e
+
+
+def encode_text(value: str):
+  return encode_string(value.encode())
+
+def decode_text(reader: ReadableBytesIO):
+  data = decode_string(reader)
+
+  try:
+    return data.decode()
+  except UnicodeDecodeError as e:
+    raise ProtocolError from e
 
 
 if __name__ == '__main__':

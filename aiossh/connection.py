@@ -6,8 +6,6 @@ from typing import TYPE_CHECKING, Optional
 
 from aiodrive import Pool, prime
 
-from .user_auth import run_user_auth
-
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
 from .error import ConnectionClosedError, ProtocolError
@@ -24,6 +22,7 @@ from .messages.misc import (NewKeysMessage, ServiceAcceptMessage,
 from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
 from .structures.primitives import encode_mpint
+from .user_auth import run_user_auth
 from .util import ReadableBytesIOImpl
 
 if TYPE_CHECKING:
@@ -356,7 +355,7 @@ class Connection:
               if self.user_auth_flow is not None:
                 raise ProtocolError
 
-              pool.spawn(prime(self.start_user_auth()))
+              pool.spawn(prime(self.start_user_auth()), name='user_auth')
 
               assert self.user_auth_flow is not None
               await self.user_auth_flow.feed(message_id, message_payload)

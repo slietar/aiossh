@@ -37,6 +37,7 @@ class MessageFlow:
     self.future = Future()
 
     message_id, payload = await self.future
+    self.future = None
 
     assert self.event is not None
     self.event.set()
@@ -45,7 +46,7 @@ class MessageFlow:
     if message_id != message_type.id:
       raise ProtocolError('Unexpected message id')
 
-    message = message_type.decode(ReadableBytesIOImpl(payload[1:]))
+    with ReadableBytesIOImpl(payload[1:]) as reader:
+      message = message_type.decode(reader)
 
-    self.future = None
     return message, payload
