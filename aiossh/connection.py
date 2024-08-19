@@ -6,9 +6,11 @@ from typing import TYPE_CHECKING, Optional
 
 from aiodrive import Pool, prime
 
+from .user_auth import run_user_auth
+
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
-from .error import ProtocolError
+from .error import ConnectionClosedError, ProtocolError
 from .flow import MessageFlow
 from .host_key import HostKey
 from .ident_string import IdentString
@@ -19,6 +21,7 @@ from .messages.base import EncodableMessage
 from .messages.kex_init import KexInitMessage
 from .messages.misc import (NewKeysMessage, ServiceAcceptMessage,
                             ServiceRequestMessage)
+from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
 from .structures.primitives import encode_mpint
 from .util import ReadableBytesIOImpl
@@ -87,6 +90,7 @@ class Connection:
   session_id: Optional[bytes] = None
 
   key_exchange_flow: Optional[MessageFlow] = None
+  user_auth_flow: Optional[MessageFlow] = None
 
 
   async def read(self, byte_count: int, /):
@@ -96,7 +100,7 @@ class Connection:
       chunk = await self.reader.read(byte_count - len(data))
 
       if not chunk:
-        raise ProtocolError(f'Expected {byte_count} bytes')
+        raise ConnectionClosedError
 
       data += chunk
 
@@ -162,7 +166,6 @@ class Connection:
       self.writer.write(sized_packet)
 
     if self.integrity_verification_out is not None:
-      # print(sized_packet.hex(' '))
       self.writer.write(self.integrity_verification_out.produce(struct.pack('>I', self.sequence_number_out) + sized_packet))
 
     self.sequence_number_out += 1
@@ -184,9 +187,8 @@ class Connection:
       kex_algorithms=['diffie-hellman-group-exchange-sha256'],
       server_host_key_algorithms=list(set(key.algorithm() for key in self.server.host_keys)),
       encryption_algorithms_client_to_server=['aes128-ctr'],
-      encryption_algorithms_server_to_client=['aes128-ctr'],
-      mac_algorithms_client_to_server=['hmac-sha1'],
-      # mac_algorithms_client_to_server=['hmac-sha2-256'],
+      encryption_algorithms_server_to_client=['aes256-ctr'],
+      mac_algorithms_client_to_server=['hmac-sha2-256'],
       mac_algorithms_server_to_client=['hmac-sha1'],
       compression_algorithms_client_to_server=['none'],
       compression_algorithms_server_to_client=['none'],
@@ -284,13 +286,22 @@ class Connection:
     self.key_exchange_flow = None
 
 
+  async def start_user_auth(self):
+    self.user_auth_flow = MessageFlow()
+
+    try:
+      await run_user_auth(self, self.user_auth_flow.read)
+    finally:
+      self.user_auth_flow = None
+
+
   async def handle(self):
     try:
       # Send server ident string
 
       self.server_ident_string = IdentString(
         comment=None,
-        software_version='aiossh_0.0'
+        software_version=self.server.software_version
       )
 
       self.writer.write(bytes(self.server_ident_string) + b'\r\n')
@@ -312,7 +323,6 @@ class Connection:
         pool.spawn(prime(self.run_key_exchange()), name='key_exchange')
 
         while True:
-          await asyncio.sleep(0)
           message_payload = await self.read_message()
 
           # See: RFC 4250 Section 4.1
@@ -323,21 +333,33 @@ class Connection:
                 pool.spawn(prime(self.run_key_exchange()))
 
               assert self.key_exchange_flow is not None
-              self.key_exchange_flow.feed(message_id, message_payload)
+              await self.key_exchange_flow.feed(message_id, message_payload)
 
             case _ if (message_id == NewKeysMessage.id) or (30 <= message_id <= 49):
               if self.key_exchange_flow is None:
                 raise ProtocolError
 
-              self.key_exchange_flow.feed(message_id, message_payload)
+              await self.key_exchange_flow.feed(message_id, message_payload)
 
             case ServiceRequestMessage.id:
+              if self.key_exchange_flow is not None:
+                raise ProtocolError
+
               message_payload_io = ReadableBytesIOImpl(message_payload[1:])
               service_request = ServiceRequestMessage.decode(message_payload_io)
 
               match service_request.service_name:
                 case b'ssh-userauth':
                   self.write_message(ServiceAcceptMessage(service_name=service_request.service_name))
+
+            case UserAuthRequestMessage.id:
+              if self.user_auth_flow is not None:
+                raise ProtocolError
+
+              pool.spawn(prime(self.start_user_auth()))
+
+              assert self.user_auth_flow is not None
+              await self.user_auth_flow.feed(message_id, message_payload)
 
             case _:
               raise ProtocolError(f'Unknown message id {message_id}')
@@ -346,6 +368,7 @@ class Connection:
       # print(e)
       # TODO: Send SSH_DISCONNECT_PROTOCOL_ERROR
       raise
-
+    except ConnectionClosedError:
+      pass
     finally:
       self.writer.close()

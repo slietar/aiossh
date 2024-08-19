@@ -1,3 +1,6 @@
+class ConnectionClosedError(Exception):
+  pass
+
 class ProtocolError(Exception):
   pass
 

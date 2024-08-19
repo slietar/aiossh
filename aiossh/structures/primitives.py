@@ -26,6 +26,10 @@ def decode_name_list(reader: ReadableBytesIO):
   return decoded.split(',')
 
 
+def decode_boolean(reader: ReadableBytesIO):
+  return bool(reader.read(1)[0]) # TODO: Check
+
+
 def encode_mpint(value: int, /):
   byte_length = math.ceil((value.bit_length() + 1) / 8) if value != 0 else 0
   return struct.pack('>I', byte_length) + value.to_bytes(byte_length, byteorder='big', signed=True)
