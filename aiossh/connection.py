@@ -1,10 +1,13 @@
 import asyncio
+from pprint import pprint
 import struct
 from asyncio import StreamReader, StreamWriter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 from aiodrive import Pool, prime
+
+from .messages.channel_request import ChannelRequestMessage
 
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
@@ -17,7 +20,9 @@ from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import EncodableMessage
 from .messages.channel import (ChannelOpenConfirmationMessage,
-                               ChannelOpenMessage)
+                               ChannelOpenFailureMessage,
+                               ChannelOpenFailureReason, ChannelOpenMessage,
+                               ChannelOpenUnknownMessage)
 from .messages.kex_init import KexInitMessage
 from .messages.misc import (NewKeysMessage, ServiceAcceptMessage,
                             ServiceRequestMessage)
@@ -368,11 +373,23 @@ class Connection:
             case ChannelOpenMessage.id:
               msg = ChannelOpenMessage.decode(ReadableBytesIOImpl(message_payload[1:]))
 
-              self.write_message(ChannelOpenConfirmationMessage(ChannelOpenMessage(
-                max_packet_size=msg.max_packet_size,
-                sender_channel_id=msg.sender_channel_id,
-                window_size=msg.window_size
-              ), recipient_channel_id=0))
+              if isinstance(msg, ChannelOpenUnknownMessage):
+                self.write_message(ChannelOpenFailureMessage(
+                  recipient_channel_id=msg.sender_channel_id,
+                  reason_code=ChannelOpenFailureReason.UnknownChannelType,
+                  description='Unknown channel type',
+                  language_tag='en'
+                ))
+              else:
+                self.write_message(ChannelOpenConfirmationMessage(ChannelOpenMessage(
+                  max_packet_size=msg.max_packet_size,
+                  sender_channel_id=msg.sender_channel_id,
+                  window_size=msg.window_size
+                ), recipient_channel_id=0))
+
+            case ChannelRequestMessage.id:
+              msg = ChannelRequestMessage.decode(ReadableBytesIOImpl(message_payload[1:]))
+              pprint(msg)
 
             case _:
               raise ProtocolError(f'Unknown message id {message_id}')

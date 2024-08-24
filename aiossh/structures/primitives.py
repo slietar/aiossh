@@ -77,7 +77,7 @@ def decode_text(reader: ReadableBytesIO):
 def encode_uint32(value: int, /):
   return struct.pack('>I', value)
 
-def decode_uint32(reader: ReadableBytesIO):
+def decode_uint32(reader: ReadableBytesIO) -> int:
   return struct.unpack('>I', reader.read(4))[0]
 
 

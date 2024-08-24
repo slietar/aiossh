@@ -1,14 +1,13 @@
 from abc import ABC
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar
 
+from ..structures.primitives import (decode_name, decode_uint32, encode_name,
+                                     encode_string, encode_text, encode_uint32)
+from .base import DecodableMessage, EncodableMessage
 from .types import LanguageTag
 
-from ..error import ProtocolError
-
-from ..structures.primitives import decode_name, decode_uint32, encode_name, encode_string, encode_text, encode_uint32
-from .base import DecodableMessage, EncodableMessage
 
 # See: RFC 4254
 
@@ -73,7 +72,7 @@ class ChannelOpenMessage(DecodableMessage, ABC):
         )
 
       case _:
-        raise ProtocolError(f'Unknown channel type: {channel_type!r}')
+        return ChannelOpenUnknownMessage(**kwargs)
 
 
 @dataclass(slots=True)
@@ -133,6 +132,10 @@ class ChannelOpenX11Message(ChannelOpenMessage):
       + encode_name(self.originator_address)\
       + encode_uint32(self.originator_port)
 
+@dataclass(kw_only=True, slots=True)
+class ChannelOpenUnknownMessage(ChannelOpenMessage):
+  pass
+
 
 @dataclass(slots=True)
 class ChannelOpenConfirmationMessage(EncodableMessage):
@@ -157,7 +160,7 @@ class ChannelOpenFailureMessage(EncodableMessage):
   id: ClassVar[int] = 92
 
   recipient_channel_id: int
-  reason_code: int # Not ChannelOpenFailureReason as there can be custom codes
+  reason_code: int # Using int instead of ChannelOpenFailureReason as there can be custom codes
   description: str
   language_tag: LanguageTag
 

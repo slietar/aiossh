@@ -8,6 +8,9 @@ class ReadableBytesIO(Protocol):
   def read(self, byte_count: int, /) -> bytes:
     ...
 
+  def read_all(self) -> None:
+    ...
+
 @dataclass(slots=True)
 class ReadableBytesIOImpl:
   data: bytes
@@ -25,6 +28,9 @@ class ReadableBytesIOImpl:
     self.position += byte_count
 
     return view
+
+  def read_all(self):
+    self.position = len(self.data)
 
   def __enter__(self):
     return self

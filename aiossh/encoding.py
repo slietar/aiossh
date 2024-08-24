@@ -1,23 +1,40 @@
 import builtins
 import dataclasses
-from types import NoneType, UnionType
+import inspect
 import typing
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar, Literal, get_type_hints
+from types import NoneType, UnionType
+from typing import Annotated, Any, ClassVar, Literal, Self, get_type_hints
 
 from .structures.primitives import (decode_boolean, decode_mpint, decode_name,
-                                     decode_string, decode_text, decode_uint32,
-                                     encode_boolean, encode_mpint, encode_name,
-                                     encode_string, encode_text, encode_uint32)
-from .util import ReadableBytesIOImpl
+                                    decode_string, decode_text, decode_uint32,
+                                    encode_boolean, encode_mpint, encode_name,
+                                    encode_string, encode_text, encode_uint32)
+from .util import ReadableBytesIO, ReadableBytesIOImpl
 
+
+class CodableABC(ABC):
+  @abstractmethod
+  def encode(self) -> bytes:
+    ...
+
+  @classmethod
+  @abstractmethod
+  def decode(cls, reader: ReadableBytesIO) -> Self:
+    ...
+
+
+@dataclass(slots=True)
+class CodableEncoding:
+  codable: CodableABC
 
 @dataclass(slots=True)
 class UnionEncoding:
   discriminant: str
   variants: 'dict[Any, type[Codable]]'
 
-type Encoding = Literal['boolean', 'mpint', 'name', 'string', 'text', 'uint32'] | UnionEncoding
+type Encoding = Literal['boolean', 'mpint', 'name', 'string', 'text', 'uint32'] | CodableEncoding | UnionEncoding
 
 
 @dataclass(slots=True)
@@ -77,6 +94,8 @@ def get_class_encodings(cls):
         encodings[field.name] = 'uint32'
       case builtins.str:
         encodings[field.name] = 'text'
+      case _ if inspect.isclass(current_type) and issubclass(current_type, CodableABC):
+        encodings[field.name] = CodableEncoding(current_type)
       case _:
         raise TypeError(f'Unsupported type: {field_type!r}')
 
@@ -104,6 +123,8 @@ class Codable:
           output += encode_text(value)
         case 'uint32':
           output += encode_uint32(value)
+        case CodableEncoding(codable):
+          output += encode_string(codable.encode())
         case UnionEncoding(discriminant, variants):
           if not isinstance(value, expected_variant_type := variants[getattr(self, discriminant)]):
             raise TypeError(f'Expected {expected_variant_type!r}, got {type(value)!r}')
@@ -132,6 +153,9 @@ class Codable:
           field_values[field_name] = decode_text(reader)
         case 'uint32':
           field_values[field_name] = decode_uint32(reader)
+        case CodableEncoding(codable):
+          with ReadableBytesIOImpl(decode_string(reader)) as codable_reader:
+            field_values[field_name] = codable.decode(codable_reader)
         case UnionEncoding(discriminant, variants):
           variant = variants.get(field_values[discriminant])
 
