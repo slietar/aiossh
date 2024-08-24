@@ -1,90 +1,134 @@
 import array
 import asyncio
+import contextlib
 import fcntl
 import os
+import pty
 import subprocess
 import sys
 import termios
-from typing import Optional
+import tty
+from dataclasses import dataclass, field
+from io import BytesIO
+from pathlib import Path
+from typing import IO, Optional
 
+import dexc
 from aiodrive import Pool
 
+dexc.install()
 
+
+@dataclass(slots=True)
 class Session:
-  def __init__(self, size: os.terminal_size):
-    self._master = None
-    self._proc = None
-    self._size = size
+  _master_fd: int = field(repr=False)
+  reader: asyncio.StreamReader
 
-  @property
-  def status(self):
-    return self._proc.poll()
+  def resize(self, size: os.terminal_size, /):
+    buf = array.array('H', [size.lines, size.columns, 0, 0])
+    fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, buf)
 
-  def resize(self, new_size: Optional[os.terminal_size] = None):
-    if new_size:
-      self._size = new_size
+async def create_session(path: Path, terminal_size: os.terminal_size):
+  master_fd, slave_fd = pty.openpty()
 
-    buf = array.array('H', [self._size.lines, self._size.columns, 0, 0])
-    fcntl.ioctl(self._master, termios.TIOCSWINSZ, buf)
+  process = subprocess.Popen(
+    [str(path)],
+    close_fds=True,
+    cwd=os.environ['HOME'],
+    preexec_fn=os.setsid,
+    shell=True,
+    stderr=slave_fd,
+    stdin=slave_fd,
+    stdout=slave_fd,
+    universal_newlines=True
+  )
 
-  async def start(self):
-    import pty
+  os.close(slave_fd)
 
-    master, slave = pty.openpty()
-    self._master = master
+  reader = await get_reader(os.fdopen(master_fd, mode='rb'))
+  # writer = await get_writer(os.fdopen(master_fd, mode='wb'))
 
-    self._proc = subprocess.Popen(["fish"], stdout=slave, stderr=slave, stdin=slave, universal_newlines=True, preexec_fn=os.setsid, shell=True, close_fds=True, cwd=os.environ["HOME"])
+  session = Session(master_fd, reader)
+  session.resize(terminal_size)
 
-    os.close(slave)
-
-    self.resize()
-
-    loop = asyncio.get_event_loop()
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await loop.connect_read_pipe(lambda: protocol, os.fdopen(master, mode="rb"))
-
-    while self._proc.poll() is None:
-      data = await reader.read(100)
-
-      # 'data' is an empty bytes object when the process terminates.
-      if len(data) > 0:
-        yield data
-
-    # print(res.decode("utf-8"), end="")
-
-  def close(self):
-    self._proc.kill()
-
-  def write(self, data):
-    os.write(self._master, data)
+  return session
 
 
-async def get_stdin_reader():
+async def get_reader(file: IO[bytes], /):
   reader = asyncio.StreamReader()
   protocol = asyncio.StreamReaderProtocol(reader)
 
   loop = asyncio.get_event_loop()
-  await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+  await loop.connect_read_pipe(lambda: protocol, file)
 
   return reader
 
+async def get_writer(file: IO[bytes], /):
+  loop = asyncio.get_event_loop()
+  transport, protocol = await loop.connect_write_pipe(asyncio.streams.FlowControlMixin, file)
+
+  writer = asyncio.StreamWriter(transport, protocol, None, loop)
+  return writer
+
+
+@contextlib.contextmanager
+def unbuffered_tty(file: IO[bytes], /):
+  fd = file.fileno()
+  attr = termios.tcgetattr(fd)
+  tty.setcbreak(fd, termios.TCSANOW)
+
+  try:
+    yield
+  finally:
+    termios.tcsetattr(fd, termios.TCSANOW, attr)
+
+async def iter_reader(reader: asyncio.StreamReader, /, *, chunk_size: int = 65_536):
+  while True:
+    chunk = await reader.read(chunk_size)
+
+    if not chunk:
+      break
+
+    yield chunk
+
 
 async def main():
-  session = Session(os.get_terminal_size())
-  stdin = await get_stdin_reader()
+  with unbuffered_tty(sys.stdin.buffer):
+    stdin = await get_reader(sys.stdin.buffer)
+    stdout = await get_writer(sys.stdout.buffer)
 
-  async def pipe_stdin():
-    await asyncio.sleep(0.1)
+    async def pipe_stdin(session):
+      await asyncio.sleep(0.1)
 
-    async for chunk in stdin:
-      session.write(chunk)
+      while True:
+        chunk = await stdin.read(256)
+        session.write(chunk)
 
-  async with Pool.open() as pool:
-    pool.spawn(pipe_stdin())
+    async with Pool.open() as pool:
+      session = await create_session(
+        path=Path(os.environ['SHELL']),
+        terminal_size=os.get_terminal_size()
+      )
 
-    async for data in session.start():
-      sys.stdout.buffer.write(data)
-      sys.stdout.buffer.flush()
+      async for x in iter_reader(session.reader):
+        print(repr(x))
 
-asyncio.run(main())
+      # pool.spawn(pipe_stdin(session))
+
+      # async for data in session:
+      #   stdout.write(data)
+
+      print('Done 1')
+
+    print('Done 2')
+
+
+# import logging
+# logging.basicConfig(level=logging.DEBUG)
+
+print(f'PID: {os.getpid()}')
+
+try:
+  asyncio.run(main())
+except KeyboardInterrupt:
+  print('\n[Interrupted]')
