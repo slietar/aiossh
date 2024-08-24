@@ -1,5 +1,6 @@
 import builtins
 import dataclasses
+from types import NoneType, UnionType
 import typing
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, get_type_hints
@@ -11,12 +12,22 @@ from .structures.primitives import (decode_boolean, decode_mpint, decode_name,
 from .util import ReadableBytesIOImpl
 
 
-type Encoding = Literal['boolean', 'mpint', 'name', 'string', 'text', 'uint32']
+@dataclass(slots=True)
+class UnionEncoding:
+  discriminant: str
+  variants: 'dict[Any, type[Codable]]'
+
+type Encoding = Literal['boolean', 'mpint', 'name', 'string', 'text', 'uint32'] | UnionEncoding
+
 
 @dataclass(slots=True)
 class EncodingAnnotation:
   name: Encoding
 
+@dataclass(slots=True)
+class UnionAnnotation:
+  discriminant: str
+  variant_attr: str
 
 type Mpint = Annotated[int, EncodingAnnotation('mpint')]
 type Name = Annotated[str, EncodingAnnotation('name')]
@@ -37,10 +48,20 @@ def get_class_encodings(cls):
       found = False
 
       for annotation in current_type.__metadata__:
-        if isinstance(annotation, EncodingAnnotation):
-          found = True
-          encodings[field.name] = annotation.name
-          break
+        match annotation:
+          case EncodingAnnotation():
+            encodings[field.name] = annotation.name
+
+          case UnionAnnotation(discriminant, variant_attr) if typing.get_origin(current_type.__origin__) is UnionType:
+            encodings[field.name] = UnionEncoding(discriminant, {
+              getattr(variant, variant_attr): variant for variant in typing.get_args(current_type.__origin__) if variant is not NoneType
+            })
+
+          case _:
+            continue
+
+        found = True
+        break
       else:
         current_type = current_type.__origin__
 
@@ -57,7 +78,6 @@ def get_class_encodings(cls):
       case builtins.str:
         encodings[field.name] = 'text'
       case _:
-        print(type(field_type))
         raise TypeError(f'Unsupported type: {field_type!r}')
 
   return encodings
@@ -84,6 +104,13 @@ class Codable:
           output += encode_text(value)
         case 'uint32':
           output += encode_uint32(value)
+        case UnionEncoding(discriminant, variants):
+          if not isinstance(value, expected_variant_type := variants[getattr(self, discriminant)]):
+            raise TypeError(f'Expected {expected_variant_type!r}, got {type(value)!r}')
+
+          output += value.encode()
+        case _:
+          raise TypeError(f'Unsupported encoding: {encoding!r}')
 
     return output
 
@@ -105,27 +132,60 @@ class Codable:
           field_values[field_name] = decode_text(reader)
         case 'uint32':
           field_values[field_name] = decode_uint32(reader)
+        case UnionEncoding(discriminant, variants):
+          variant = variants.get(field_values[discriminant])
+
+          if variant is not None:
+            field_values[field_name] = variant.decode(reader)
+          else:
+            field_values[field_name] = None
+            reader.read_all()
+        case _:
+          raise TypeError(f'Unsupported encoding: {encoding!r}')
 
     return cls(**field_values)
 
 
 if __name__ == '__main__':
-  @dataclass(kw_only=True, slots=True)
-  class User(Codable):
-    id: ClassVar[int] = 12
+  # @dataclass(kw_only=True, slots=True)
+  # class User(Codable):
+  #   id: ClassVar[int] = 12
 
-    age: Mpint
-    name: Annotated[str, EncodingAnnotation('name')]
+  #   age: Mpint
+  #   name: Annotated[str, EncodingAnnotation('name')]
 
-  @dataclass(slots=True)
-  class AdminUser(User):
-    senior: bool
+  # @dataclass(slots=True)
+  # class AdminUser(User):
+  #   senior: bool
 
 
-  u = AdminUser(age=550729374570437490275934, name='John', senior=True)
-  encoded = u.encode()
+  # u = AdminUser(age=550729374570437490275934, name='John', senior=True)
+  # encoded = u.encode()
+
+  # print(encoded.hex(' '))
+
+  # with ReadableBytesIOImpl(encoded) as reader:
+  #   print(AdminUser.decode(reader))
+
+  @dataclass
+  class A1(Codable):
+    key: ClassVar[str] = '1'
+    x: int = 56
+
+  @dataclass
+  class A2(Codable):
+    key: ClassVar[str] = '2'
+
+  @dataclass
+  class Entry(Codable):
+    variant: str
+    details: Annotated[A1 | None, UnionAnnotation('variant', 'key')]
+
+  entry = Entry(variant='1', details=A1())
+  encoded = entry.encode()
 
   print(encoded.hex(' '))
+  print(repr(encoded))
 
-  with ReadableBytesIOImpl(encoded) as reader:
-    print(AdminUser.decode(reader))
+  with ReadableBytesIOImpl(b'\x00\x00\x00\x012\x00') as reader:
+    print(Entry.decode(reader))
