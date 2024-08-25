@@ -1,4 +1,6 @@
-from typing import Literal
+from typing import Annotated, Literal
+
+from ..encoding import EncodingAnnotation
 
 
-type LanguageTag = Literal['']
+type LanguageTag = Annotated[Literal[''], EncodingAnnotation('name')]

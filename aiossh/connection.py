@@ -1,3 +1,5 @@
+import functools
+import operator
 import struct
 from asyncio import StreamReader, StreamWriter
 from dataclasses import dataclass, field
@@ -10,7 +12,7 @@ from .algorithms import AlgorithmSelection
 from .client import BaseClient
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
-from .error import (ConnectionClosedError, IntegrityVerificationError,
+from .error import (AlgorithmNegotiationError, ConnectionClosedError, IntegrityVerificationError,
                     ProtocolError, ProtocolVersionNotSupportedError)
 from .flow import MessageFlow
 from .host_key import HostKey
@@ -162,10 +164,11 @@ class Connection:
     # Send server KexInit message
 
     supported_algorithms = self.client.get_supported_algorithms()
+    supported_algorithms.server_host_key_algorithms &= functools.reduce(operator.or_, (key.algorithms() for key in self.server.host_keys))
 
     server_kex_init = KexInitMessage(
       kex_algorithms=list(supported_algorithms.kex_algorithms),
-      server_host_key_algorithms=list(set(key.algorithm() for key in self.server.host_keys)),
+      server_host_key_algorithms=list(supported_algorithms.server_host_key_algorithms),
       encryption_algorithms_client_to_server=list(supported_algorithms.encryption_algorithms_client_to_server),
       encryption_algorithms_server_to_client=list(supported_algorithms.encryption_algorithms_server_to_client),
       mac_algorithms_client_to_server=list(supported_algorithms.mac_algorithms_client_to_server),
@@ -188,7 +191,7 @@ class Connection:
     # Negotiate algorithms
 
     self.algorithm_selection = supported_algorithms.negotiate(client_kex_init)
-    self.host_key = next(key for key in self.server.host_keys if key.algorithm() == self.algorithm_selection.server_host_key_algorithm)
+    self.host_key = next(key for key in self.server.host_keys if self.algorithm_selection.server_host_key_algorithm in key.algorithms())
 
 
     # Run key exchange
@@ -376,6 +379,16 @@ class Connection:
 
               if self.debug:
                 raise ProtocolError(f'Unknown message id {message_id}')
+
+    except AlgorithmNegotiationError:
+      self.write_message(DisconnectMessage(
+        reason_code=DisconnectReason.KeyExchangeFailed,
+        description='Key exchange failed',
+        language_tag=''
+      ))
+
+      if self.debug:
+        raise
 
     except IntegrityVerificationError:
       self.write_message(DisconnectMessage(

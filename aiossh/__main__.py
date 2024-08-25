@@ -6,10 +6,10 @@ from pathlib import Path
 
 import dexc
 from aiodrive import Pool
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 
 from .client import BaseClient
-from .host_key import ECDSAHostKey, ED25519HostKey, HostKey
+from .host_key import ECDSAHostKey, ED25519HostKey, HostKey, RSAHostKey
 from .server import Server
 from .tcp import SockName, serve_tcp
 
@@ -32,8 +32,9 @@ async def main():
       host_keys: list[HostKey] = pickle.load(file)
   else:
     host_keys: list[HostKey] = [
-      ED25519HostKey(ed25519.Ed25519PrivateKey.generate()),
-      ECDSAHostKey(ec.generate_private_key(ec.SECP256R1())),
+      # ED25519HostKey(ed25519.Ed25519PrivateKey.generate()),
+      # ECDSAHostKey(ec.generate_private_key(ec.SECP256R1())),
+      RSAHostKey(private_key=rsa.generate_private_key(public_exponent=65537, key_size=2048), supported_algorithms=frozenset({'ssh-rsa', 'rsa-sha2-256'}))
     ]
 
     host_keys_path.parent.mkdir(exist_ok=True, parents=True)

@@ -79,8 +79,10 @@ class DhKeyExchange(KeyExchange):
       + encode_mpint(server_f)\
       + encoded_shared_secret
 
+    assert conn.algorithm_selection is not None
+
     exchange_hash = self.hash(data_to_hash)
-    signature = conn.host_key.sign_encode(exchange_hash)
+    signature = conn.host_key.sign_encode(conn.algorithm_selection.server_host_key_algorithm, exchange_hash)
 
     kex_dh_gex_reply = KexDhGexReplyMessage(
       host_key=encoded_host_public_key,

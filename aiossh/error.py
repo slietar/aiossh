@@ -1,3 +1,6 @@
+class AlgorithmNegotiationError(Exception):
+  pass
+
 class ConnectionClosedError(Exception):
   pass
 
