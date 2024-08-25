@@ -1,1 +1,4 @@
-type LanguageTag = str
+from typing import Literal
+
+
+type LanguageTag = Literal['']

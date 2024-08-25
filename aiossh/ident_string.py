@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
-from .error import ProtocolError
+from .error import ProtocolError, ProtocolVersionNotSupportedError
 from .version import SSH_PROTOCOL_VERSION
 
 
@@ -30,7 +30,7 @@ class IdentString:
       raise ProtocolError
 
     if not sub_segments[1] != SSH_PROTOCOL_VERSION:
-      raise ProtocolError
+      raise ProtocolVersionNotSupportedError
 
     try:
       software_version = sub_segments[2].decode('ascii')

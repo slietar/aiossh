@@ -1,4 +1,3 @@
-import asyncio
 import struct
 from asyncio import StreamReader, StreamWriter
 from dataclasses import dataclass, field
@@ -8,26 +7,27 @@ from typing import TYPE_CHECKING, Optional
 from aiodrive import Pool, prime
 
 from .algorithms import AlgorithmSelection
-
 from .client import BaseClient
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
-from .error import ConnectionClosedError, ProtocolError
+from .error import (ConnectionClosedError, IntegrityVerificationError,
+                    ProtocolError, ProtocolVersionNotSupportedError)
 from .flow import MessageFlow
 from .host_key import HostKey
 from .ident_string import IdentString
 from .integrity.base import IntegrityVerification
 from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
-from .messages.base import EncodableMessage, Message
+from .messages.base import EncodableMessage
 from .messages.channel import (ChannelOpenConfirmationMessage,
                                ChannelOpenFailureMessage,
                                ChannelOpenFailureReason, ChannelOpenMessage,
                                ChannelOpenUnknownMessage)
 from .messages.channel_request import ChannelRequestMessage
+from .messages.core import (DisconnectMessage, DisconnectReason,
+                            NewKeysMessage, UnimplementedMessage)
 from .messages.kex_init import KexInitMessage
-from .messages.misc import (NewKeysMessage, ServiceAcceptMessage,
-                            ServiceRequestMessage)
+from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
 from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
 from .structures.primitives import encode_mpint
@@ -45,6 +45,8 @@ class Connection:
 
   reader: StreamReader
   writer: StreamWriter
+
+  debug: bool = True
 
   client_ident_string: Optional[IdentString] = field(default=None, init=False)
   server_ident_string: Optional[IdentString] = field(default=None, init=False)
@@ -68,7 +70,10 @@ class Connection:
     data = bytes()
 
     while len(data) < byte_count:
-      chunk = await self.reader.read(byte_count - len(data))
+      try:
+        chunk = await self.reader.read(byte_count - len(data))
+      except ConnectionResetError as e:
+        raise ConnectionClosedError from e
 
       if not chunk:
         raise ConnectionClosedError
@@ -112,20 +117,22 @@ class Connection:
     # Verify integrity using MAC
     # See: RFC 4253 Section 6.4
 
+    sequence_number = self.sequence_number_in
+
     if self.integrity_verification_in is not None:
       expected_digest = await self.read(self.integrity_verification_in.digest_size())
 
-      produced_digest = self.integrity_verification_in.produce(struct.pack('>I', self.sequence_number_in) + sized_packet)
+      produced_digest = self.integrity_verification_in.produce(struct.pack('>I', sequence_number) + sized_packet)
 
       if expected_digest != produced_digest:
-        raise ProtocolError('Integrity verification failure')
+        raise IntegrityVerificationError
 
 
     # Return payload
 
     self.sequence_number_in += 1
 
-    return payload
+    return payload, sequence_number
 
   def write_message(self, message: EncodableMessage):
     payload = message.encode_payload()
@@ -279,7 +286,16 @@ class Connection:
       if len(client_ident_string_terminated) > 0xff:
         raise ProtocolError
 
-      self.client_ident_string = IdentString.decode(client_ident_string_terminated[:-2])
+      try:
+        self.client_ident_string = IdentString.decode(client_ident_string_terminated[:-2])
+      except ProtocolVersionNotSupportedError:
+        self.write_message(DisconnectMessage(
+          reason_code=DisconnectReason.ProtocolVersionNotSupported,
+          description='Protocol version not supported',
+          language_tag=''
+        ))
+
+        return
 
 
       # Listen for messages
@@ -288,14 +304,14 @@ class Connection:
         pool.spawn(prime(self.run_key_exchange()), name='key_exchange')
 
         while True:
-          message_payload = await self.read_message()
+          message_payload, message_sequence_number = await self.read_message()
 
           # See: RFC 4250 Section 4.1
 
           match (message_id := message_payload[0]):
             case KexInitMessage.id:
               if self.key_exchange_flow is None:
-                pool.spawn(prime(self.run_key_exchange()))
+                pool.spawn(prime(self.run_key_exchange()), name='key_exchange')
 
               assert self.key_exchange_flow is not None
               await self.key_exchange_flow.feed(message_id, message_payload)
@@ -317,8 +333,13 @@ class Connection:
                 case 'ssh-userauth':
                   self.write_message(ServiceAcceptMessage(service_name=service_request.service_name))
                 case _:
-                  # TODO: Send correct error message
-                  raise ProtocolError(f'Unsupported service name: {service_request.service_name!r}')
+                  self.write_message(DisconnectMessage(
+                    reason_code=DisconnectReason.ServiceNotAvailable,
+                    description='Service not available',
+                    language_tag=''
+                  ))
+
+                  return
 
             case UserAuthRequestMessage.id:
               if self.user_auth_flow is not None:
@@ -337,7 +358,7 @@ class Connection:
                   recipient_channel_id=msg.sender_channel_id,
                   reason_code=ChannelOpenFailureReason.UnknownChannelType,
                   description='Unknown channel type',
-                  language_tag='en'
+                  language_tag=''
                 ))
               else:
                 self.write_message(ChannelOpenConfirmationMessage(ChannelOpenMessage(
@@ -351,13 +372,33 @@ class Connection:
               pprint(msg)
 
             case _:
-              raise ProtocolError(f'Unknown message id {message_id}')
+              self.write_message(UnimplementedMessage(message_sequence_number))
 
-    except ProtocolError as e:
-      # print(e)
-      # TODO: Send SSH_DISCONNECT_PROTOCOL_ERROR
-      raise
+              if self.debug:
+                raise ProtocolError(f'Unknown message id {message_id}')
+
+    except IntegrityVerificationError:
+      self.write_message(DisconnectMessage(
+        reason_code=DisconnectReason.MacError,
+        description='Integrity verification error',
+        language_tag=''
+      ))
+
+      if self.debug:
+        raise
+
+    except ProtocolError:
+      self.write_message(DisconnectMessage(
+        reason_code=DisconnectReason.ProtocolError,
+        description='Protocol error',
+        language_tag=''
+      ))
+
+      if self.debug:
+        raise
+
     except ConnectionClosedError:
       pass
+
     finally:
       self.writer.close()
