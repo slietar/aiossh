@@ -1,65 +1,28 @@
 import os
-import struct
-from dataclasses import dataclass
-from typing import ClassVar
+from dataclasses import dataclass, field
+from typing import Annotated, ClassVar, final
 
-from .base import DecodableMessage, EncodableMessage
-from ..structures.primitives import decode_name_list, encode_boolean, encode_name_list
-from ..util import ReadableBytesIO
+from ..encoding import Codable, FixedSizeBytesAnnotation, NameList
+from .base import Message
 
 
 # Client & server
 
-@dataclass(frozen=True, kw_only=True, slots=True)
-class KexInitMessage(DecodableMessage, EncodableMessage):
+@final
+@dataclass(kw_only=True, slots=True)
+class KexInitMessage(Codable, Message):
   id: ClassVar[int] = 20
 
-  kex_algorithms: list[str]
-  server_host_key_algorithms: list[str]
-  encryption_algorithms_client_to_server: list[str]
-  encryption_algorithms_server_to_client: list[str]
-  mac_algorithms_client_to_server: list[str]
-  mac_algorithms_server_to_client: list[str]
-  compression_algorithms_client_to_server: list[str]
-  compression_algorithms_server_to_client: list[str]
-  languages_client_to_server: list[str]
-  languages_server_to_client: list[str]
+  _random: Annotated[bytes, FixedSizeBytesAnnotation(16)] = field(default_factory=(lambda: os.urandom(16)), init=False, repr=False)
+  kex_algorithms: NameList
+  server_host_key_algorithms: NameList
+  encryption_algorithms_client_to_server: NameList
+  encryption_algorithms_server_to_client: NameList
+  mac_algorithms_client_to_server: NameList
+  mac_algorithms_server_to_client: NameList
+  compression_algorithms_client_to_server: NameList
+  compression_algorithms_server_to_client: NameList
+  languages_client_to_server: NameList
+  languages_server_to_client: NameList
   first_kex_packet_follows: bool
-
-  def encode(self):
-    return os.urandom(16)\
-      + encode_name_list(self.kex_algorithms)\
-      + encode_name_list(self.server_host_key_algorithms)\
-      + encode_name_list(self.encryption_algorithms_client_to_server)\
-      + encode_name_list(self.encryption_algorithms_server_to_client)\
-      + encode_name_list(self.mac_algorithms_client_to_server)\
-      + encode_name_list(self.mac_algorithms_server_to_client)\
-      + encode_name_list(self.compression_algorithms_client_to_server)\
-      + encode_name_list(self.compression_algorithms_server_to_client)\
-      + encode_name_list(self.languages_client_to_server)\
-      + encode_name_list(self.languages_server_to_client)\
-      + encode_boolean(False)\
-      + struct.pack('>I', 0)
-
-
-  @classmethod
-  def decode(cls, reader: ReadableBytesIO):
-    reader.read(16)
-
-    message = cls(
-      kex_algorithms=decode_name_list(reader),
-      server_host_key_algorithms=decode_name_list(reader),
-      encryption_algorithms_client_to_server=decode_name_list(reader),
-      encryption_algorithms_server_to_client=decode_name_list(reader),
-      mac_algorithms_client_to_server=decode_name_list(reader),
-      mac_algorithms_server_to_client=decode_name_list(reader),
-      compression_algorithms_client_to_server=decode_name_list(reader),
-      compression_algorithms_server_to_client=decode_name_list(reader),
-      languages_client_to_server=decode_name_list(reader),
-      languages_server_to_client=decode_name_list(reader),
-      first_kex_packet_follows=struct.unpack('>?', reader.read(1))[0]
-    )
-
-    reader.read(4)
-
-    return message
+  _reserved: int = field(default=0, init=False, repr=False)

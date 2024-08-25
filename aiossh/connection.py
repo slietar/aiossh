@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Optional
 
 from aiodrive import Pool, prime
 
+from .algorithms import AlgorithmSelection
+
 from .client import BaseClient
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
@@ -17,7 +19,7 @@ from .ident_string import IdentString
 from .integrity.base import IntegrityVerification
 from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
-from .messages.base import EncodableMessage
+from .messages.base import EncodableMessage, Message
 from .messages.channel import (ChannelOpenConfirmationMessage,
                                ChannelOpenFailureMessage,
                                ChannelOpenFailureReason, ChannelOpenMessage,
@@ -34,44 +36,6 @@ from .util import ReadableBytesIOImpl
 
 if TYPE_CHECKING:
   from .server import Server
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class AlgorithmSelection:
-  kex_algorithm: str
-  server_host_key_algorithm: str
-  encryption_algorithm_client_to_server: str
-  encryption_algorithm_server_to_client: str
-  mac_algorithm_client_to_server: str
-  mac_algorithm_server_to_client: str
-
-
-def negotiate_algorithms(client: KexInitMessage, server: KexInitMessage):
-  # See: RFC 4253 Section 7.1
-
-  kex_algorithm = next((algorithm for algorithm in client.kex_algorithms if algorithm in server.kex_algorithms), None)
-  server_host_key_algorithm = next((algorithm for algorithm in client.server_host_key_algorithms if algorithm in server.server_host_key_algorithms), None)
-  encryption_algorithm_client_to_server = next((algorithm for algorithm in client.encryption_algorithms_client_to_server if algorithm in server.encryption_algorithms_client_to_server), None)
-  encryption_algorithm_server_to_client = next((algorithm for algorithm in client.encryption_algorithms_server_to_client if algorithm in server.encryption_algorithms_server_to_client), None)
-  mac_algorithm_client_to_server = next((algorithm for algorithm in client.mac_algorithms_client_to_server if algorithm in server.mac_algorithms_client_to_server), None)
-  mac_algorithm_server_to_client = next((algorithm for algorithm in client.mac_algorithms_server_to_client if algorithm in server.mac_algorithms_server_to_client), None)
-
-  if (kex_algorithm is None)\
-    or (server_host_key_algorithm is None)\
-    or (encryption_algorithm_client_to_server is None)\
-    or (encryption_algorithm_server_to_client is None)\
-    or (mac_algorithm_client_to_server is None)\
-    or (mac_algorithm_server_to_client is None):
-    raise ProtocolError('Algorithm negotiation failure')
-
-  return AlgorithmSelection(
-    kex_algorithm=kex_algorithm,
-    server_host_key_algorithm=server_host_key_algorithm,
-    encryption_algorithm_client_to_server=encryption_algorithm_client_to_server,
-    encryption_algorithm_server_to_client=encryption_algorithm_server_to_client,
-    mac_algorithm_client_to_server=mac_algorithm_client_to_server,
-    mac_algorithm_server_to_client=mac_algorithm_server_to_client
-  )
 
 
 @dataclass(repr=False, slots=True)
@@ -190,15 +154,17 @@ class Connection:
 
     # Send server KexInit message
 
+    supported_algorithms = self.client.get_supported_algorithms()
+
     server_kex_init = KexInitMessage(
-      kex_algorithms=['diffie-hellman-group-exchange-sha256'],
+      kex_algorithms=list(supported_algorithms.kex_algorithms),
       server_host_key_algorithms=list(set(key.algorithm() for key in self.server.host_keys)),
-      encryption_algorithms_client_to_server=['aes128-ctr'],
-      encryption_algorithms_server_to_client=['aes256-ctr'],
-      mac_algorithms_client_to_server=['hmac-sha2-256'],
-      mac_algorithms_server_to_client=['hmac-sha1'],
-      compression_algorithms_client_to_server=['none'],
-      compression_algorithms_server_to_client=['none'],
+      encryption_algorithms_client_to_server=list(supported_algorithms.encryption_algorithms_client_to_server),
+      encryption_algorithms_server_to_client=list(supported_algorithms.encryption_algorithms_server_to_client),
+      mac_algorithms_client_to_server=list(supported_algorithms.mac_algorithms_client_to_server),
+      mac_algorithms_server_to_client=list(supported_algorithms.mac_algorithms_server_to_client),
+      compression_algorithms_client_to_server=list(supported_algorithms.compression_algorithms_client_to_server),
+      compression_algorithms_server_to_client=list(supported_algorithms.compression_algorithms_server_to_client),
       languages_client_to_server=[],
       languages_server_to_client=[],
       first_kex_packet_follows=False
@@ -209,20 +175,12 @@ class Connection:
 
     # Read client KexInit message
 
-    # if client_key_exchange:
-    #   client_kex_init, client_kex_init_payload = client_key_exchange
-    # else:
-
     client_kex_init, client_kex_init_payload = await read(KexInitMessage)
 
 
     # Negotiate algorithms
 
-    self.algorithm_selection = negotiate_algorithms(
-      client_kex_init,
-      server_kex_init
-    )
-
+    self.algorithm_selection = supported_algorithms.negotiate(client_kex_init)
     self.host_key = next(key for key in self.server.host_keys if key.algorithm() == self.algorithm_selection.server_host_key_algorithm)
 
 

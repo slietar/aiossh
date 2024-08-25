@@ -1,15 +1,16 @@
 import builtins
 import dataclasses
 import inspect
+import os
 import typing
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from types import NoneType, UnionType
 from typing import Annotated, Any, ClassVar, Literal, Self, get_type_hints
 
-from .structures.primitives import (decode_boolean, decode_mpint, decode_name,
+from .structures.primitives import (decode_boolean, decode_mpint, decode_name, decode_name_list,
                                     decode_string, decode_text, decode_uint32,
-                                    encode_boolean, encode_mpint, encode_name,
+                                    encode_boolean, encode_mpint, encode_name, encode_name_list,
                                     encode_string, encode_text, encode_uint32)
 from .util import ReadableBytesIO, ReadableBytesIOImpl
 
@@ -30,16 +31,24 @@ class CodableEncoding:
   codable: CodableABC
 
 @dataclass(slots=True)
+class FixedSizeBytesEncoding:
+  size: int
+
+@dataclass(slots=True)
 class UnionEncoding:
   discriminant: str
   variants: 'dict[Any, type[Codable]]'
 
-type Encoding = Literal['boolean', 'mpint', 'name', 'string', 'text', 'uint32'] | CodableEncoding | UnionEncoding
+type Encoding = Literal['boolean', 'mpint', 'name', 'name-list', 'string', 'text', 'uint32'] | CodableEncoding | FixedSizeBytesEncoding | UnionEncoding
 
 
 @dataclass(slots=True)
 class EncodingAnnotation:
   name: Encoding
+
+@dataclass(slots=True)
+class FixedSizeBytesAnnotation:
+  size: int
 
 @dataclass(slots=True)
 class UnionAnnotation:
@@ -48,6 +57,7 @@ class UnionAnnotation:
 
 type Mpint = Annotated[int, EncodingAnnotation('mpint')]
 type Name = Annotated[str, EncodingAnnotation('name')]
+type NameList = Annotated[list[str], EncodingAnnotation('name-list')]
 
 
 def get_class_encodings(cls):
@@ -68,6 +78,9 @@ def get_class_encodings(cls):
         match annotation:
           case EncodingAnnotation():
             encodings[field.name] = annotation.name
+
+          case FixedSizeBytesAnnotation(size):
+            encodings[field.name] = FixedSizeBytesEncoding(size)
 
           case UnionAnnotation(discriminant, variant_attr) if typing.get_origin(current_type.__origin__) is UnionType:
             encodings[field.name] = UnionEncoding(discriminant, {
@@ -95,7 +108,7 @@ def get_class_encodings(cls):
       case builtins.str:
         encodings[field.name] = 'text'
       case _ if inspect.isclass(current_type) and issubclass(current_type, CodableABC):
-        encodings[field.name] = CodableEncoding(current_type)
+        encodings[field.name] = CodableEncoding(current_type) # type: ignore
       case _:
         raise TypeError(f'Unsupported type: {field_type!r}')
 
@@ -117,6 +130,8 @@ class Codable:
           output += encode_mpint(value)
         case 'name':
           output += encode_name(value)
+        case 'name-list':
+          output += encode_name_list(value)
         case 'string':
           output += encode_string(value)
         case 'text':
@@ -125,6 +140,9 @@ class Codable:
           output += encode_uint32(value)
         case CodableEncoding(codable):
           output += encode_string(codable.encode())
+        case FixedSizeBytesEncoding(size):
+          assert len(value) == size
+          output += value
         case UnionEncoding(discriminant, variants):
           if not isinstance(value, expected_variant_type := variants[getattr(self, discriminant)]):
             raise TypeError(f'Expected {expected_variant_type!r}, got {type(value)!r}')
@@ -149,6 +167,8 @@ class Codable:
           field_values[field_name] = decode_string(reader)
         case 'name':
           field_values[field_name] = decode_name(reader)
+        case 'name-list':
+          field_values[field_name] = decode_name_list(reader)
         case 'text':
           field_values[field_name] = decode_text(reader)
         case 'uint32':
@@ -156,6 +176,8 @@ class Codable:
         case CodableEncoding(codable):
           with ReadableBytesIOImpl(decode_string(reader)) as codable_reader:
             field_values[field_name] = codable.decode(codable_reader)
+        case FixedSizeBytesEncoding(size):
+          field_values[field_name] = reader.read(size)
         case UnionEncoding(discriminant, variants):
           variant = variants.get(field_values[discriminant])
 
@@ -167,7 +189,12 @@ class Codable:
         case _:
           raise TypeError(f'Unsupported encoding: {encoding!r}')
 
-    return cls(**field_values)
+    instance = cls.__new__(cls)
+
+    for field_name, value in field_values.items():
+      setattr(instance, field_name, value)
+
+    return instance
 
 
 if __name__ == '__main__':
