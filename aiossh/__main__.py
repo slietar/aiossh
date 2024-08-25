@@ -1,20 +1,28 @@
 import asyncio
-import os
+import logging
 import pickle
 import signal
 from pathlib import Path
-from pprint import pprint
 
 import dexc
+from aiodrive import Pool
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
+from .client import BaseClient
 from .host_key import ECDSAHostKey, ED25519HostKey, HostKey
 from .server import Server
+from .tcp import SockName, serve_tcp
 
-
-dexc.install()
 
 # print('PID', os.getpid())
+dexc.install()
+logging.basicConfig(level=logging.DEBUG)
+
+
+class Client(BaseClient):
+  def __init__(self, name: SockName):
+    print(f'New connection from {name}')
+
 
 async def main():
   host_keys_path = Path('tmp/keys.pkl')
@@ -36,7 +44,25 @@ async def main():
   # pprint(host_keys)
   server = Server(host_keys=host_keys)
 
-  task = asyncio.create_task(server.serve('127.0.0.1', 1302))
+
+  async with serve_tcp(['127.0.0.1', '::1'], 1302) as tcp_server:
+    for name in tcp_server.names:
+      print(f'Listening on {name}')
+
+    async with Pool.open() as pool:
+      async for incoming in tcp_server:
+        pool.spawn(
+          server.handle(
+            Client(incoming.client_name),
+            incoming.reader,
+            incoming.writer
+          ),
+          name=f'handle-{incoming.client_name}'
+        )
+
+
+async def entry():
+  task = asyncio.create_task(main())
   loop = asyncio.get_event_loop()
 
   for sig in [signal.SIGINT, signal.SIGTERM]:
@@ -45,7 +71,7 @@ async def main():
   try:
     await task
   except asyncio.CancelledError:
-    pass
+    print('[Interrupted]')
 
 
-asyncio.run(main())
+asyncio.run(entry())

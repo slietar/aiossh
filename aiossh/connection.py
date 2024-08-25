@@ -1,14 +1,13 @@
 import asyncio
-from pprint import pprint
 import struct
 from asyncio import StreamReader, StreamWriter
 from dataclasses import dataclass, field
+from pprint import pprint
 from typing import TYPE_CHECKING, Optional
 
 from aiodrive import Pool, prime
 
-from .messages.channel_request import ChannelRequestMessage
-
+from .client import BaseClient
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
 from .error import ConnectionClosedError, ProtocolError
@@ -23,6 +22,7 @@ from .messages.channel import (ChannelOpenConfirmationMessage,
                                ChannelOpenFailureMessage,
                                ChannelOpenFailureReason, ChannelOpenMessage,
                                ChannelOpenUnknownMessage)
+from .messages.channel_request import ChannelRequestMessage
 from .messages.kex_init import KexInitMessage
 from .messages.misc import (NewKeysMessage, ServiceAcceptMessage,
                             ServiceRequestMessage)
@@ -77,6 +77,7 @@ def negotiate_algorithms(client: KexInitMessage, server: KexInitMessage):
 @dataclass(repr=False, slots=True)
 class Connection:
   server: 'Server'
+  client: BaseClient
 
   reader: StreamReader
   writer: StreamWriter
