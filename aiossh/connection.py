@@ -1,19 +1,26 @@
+from collections.abc import Awaitable
 import functools
+import logging
 import operator
 import struct
-from asyncio import StreamReader, StreamWriter
+from asyncio import StreamReader, StreamWriter, TaskGroup
 from dataclasses import dataclass, field
 from pprint import pprint
 from typing import TYPE_CHECKING, Optional
 
-from aiodrive import Pool, prime
+import aiodrive
 
 from .algorithms import AlgorithmSelection
 from .client import BaseClient
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
-from .error import (AlgorithmNegotiationError, ConnectionClosedError, IntegrityVerificationError,
-                    ProtocolError, ProtocolVersionNotSupportedError)
+from .error import (
+  AlgorithmNegotiationError,
+  ConnectionClosedError,
+  IntegrityVerificationError,
+  ProtocolError,
+  ProtocolVersionNotSupportedError,
+)
 from .flow import MessageFlow
 from .host_key import HostKey
 from .ident_string import IdentString
@@ -21,13 +28,20 @@ from .integrity.base import IntegrityVerification
 from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import EncodableMessage
-from .messages.channel import (ChannelOpenConfirmationMessage,
-                               ChannelOpenFailureMessage,
-                               ChannelOpenFailureReason, ChannelOpenMessage,
-                               ChannelOpenUnknownMessage)
+from .messages.channel import (
+  ChannelOpenConfirmationMessage,
+  ChannelOpenFailureMessage,
+  ChannelOpenFailureReason,
+  ChannelOpenMessage,
+  ChannelOpenUnknownMessage,
+)
 from .messages.channel_request import ChannelRequestMessage
-from .messages.core import (DisconnectMessage, DisconnectReason,
-                            NewKeysMessage, UnimplementedMessage)
+from .messages.core import (
+  DisconnectMessage,
+  DisconnectReason,
+  NewKeysMessage,
+  UnimplementedMessage,
+)
 from .messages.kex_init import KexInitMessage
 from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
 from .messages.user_auth import UserAuthRequestMessage
@@ -40,9 +54,12 @@ if TYPE_CHECKING:
   from .server import Server
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(repr=False, slots=True)
 class Connection:
-  server: 'Server'
+  server: Server
   client: BaseClient
 
   reader: StreamReader
@@ -69,6 +86,8 @@ class Connection:
 
 
   async def read(self, byte_count: int, /):
+    # The read byte count may be zero.
+
     data = bytes()
 
     while len(data) < byte_count:
@@ -86,34 +105,54 @@ class Connection:
 
 
   async def read_message(self):
-    # Read packet length or first block
+    # Read packet length (without the length itself) or first block
+
+    packet_length_size = 4
+    padding_length_size = 1
 
     if self.encryption_in is not None:
-      sized_packet = self.encryption_in.decrypt_blocks(await self.read(self.encryption_in.block_size()))
+      packet_with_length = self.encryption_in.decrypt_blocks(
+        await self.read(self.encryption_in.block_size()),
+      )
     else:
-      sized_packet = await self.read(4)
+      packet_with_length = await self.read(packet_length_size)
 
 
     # Read rest of packet
     # See: RFC 4253 Section 6
 
-    packet_length_bytes = sized_packet[:4]
+    packet_length_bytes = packet_with_length[:packet_length_size]
     packet_length = struct.unpack('>I', packet_length_bytes)[0]
 
+    # The packet must at least contain the padding length byte.
+    if packet_length < 1:
+      raise ProtocolError
+
     if self.encryption_in is not None:
+      # TODO: Change to ensure missing_block_count >= 0
       missing_block_count = (packet_length + 4) // self.encryption_in.block_size() - 1
-      sized_packet += self.encryption_in.decrypt_blocks(await self.read(self.encryption_in.block_size() * missing_block_count))
-      packet = sized_packet[4:]
+      packet_with_length += self.encryption_in.decrypt_blocks(
+        await self.read(self.encryption_in.block_size() * missing_block_count)
+      )
+
+      packet_after_length = packet_with_length[packet_length_size:]
     else:
-      packet = await self.read(packet_length)
-      sized_packet += packet
+      packet_after_length = await self.read(packet_length)
+      packet_with_length += packet_after_length
 
-    padding_length = packet[0]
-    payload_length = packet_length - padding_length - 1
+    padding_length = packet_after_length[0]
+    payload_length = packet_length - padding_length - padding_length_size
 
-    payload = packet[1:(1 + payload_length)]
+    block_size_or_zero = self.encryption_in.block_size() if self.encryption_in is not None else 0
+    padding_alignment = max(block_size_or_zero, 8)
 
-    # TODO: Checks on lengths
+    # Packet size without the mac
+    packet_size = packet_length_size + padding_length_size + payload_length + padding_length
+
+    if (payload_length < 0) or (packet_size % padding_alignment) != 0 or (packet_size < max(block_size_or_zero, 16)):
+      raise ProtocolError
+
+    payload = packet_after_length[padding_length_size:(padding_length_size + payload_length)]
 
 
     # Verify integrity using MAC
@@ -123,8 +162,9 @@ class Connection:
 
     if self.integrity_verification_in is not None:
       expected_digest = await self.read(self.integrity_verification_in.digest_size())
-
-      produced_digest = self.integrity_verification_in.produce(struct.pack('>I', sequence_number) + sized_packet)
+      produced_digest = self.integrity_verification_in.produce(
+        struct.pack('>I', sequence_number) + packet_with_length,
+      )
 
       if expected_digest != produced_digest:
         raise IntegrityVerificationError
@@ -300,11 +340,16 @@ class Connection:
 
         return
 
+      logger.debug(f'Client version: "{self.client_ident_string.software_version}"')
+
 
       # Listen for messages
 
-      async with Pool.open() as pool:
-        pool.spawn(prime(self.run_key_exchange()), name='key_exchange')
+      async def wrap[T](awaitable: Awaitable[T], /):
+        return await awaitable
+
+      async with TaskGroup() as group:
+        group.create_task(wrap(aiodrive.prime(self.run_key_exchange())), name='key_exchange')
 
         while True:
           message_payload, message_sequence_number = await self.read_message()
@@ -314,7 +359,7 @@ class Connection:
           match (message_id := message_payload[0]):
             case KexInitMessage.id:
               if self.key_exchange_flow is None:
-                pool.spawn(prime(self.run_key_exchange()), name='key_exchange')
+                group.create_task(wrap(aiodrive.prime(self.run_key_exchange())), name='key_exchange')
 
               assert self.key_exchange_flow is not None
               await self.key_exchange_flow.feed(message_id, message_payload)
@@ -348,7 +393,7 @@ class Connection:
               if self.user_auth_flow is not None:
                 raise ProtocolError
 
-              pool.spawn(prime(self.start_user_auth()), name='user_auth')
+              group.create_task(wrap(aiodrive.prime(self.start_user_auth())), name='user_auth')
 
               assert self.user_auth_flow is not None
               await self.user_auth_flow.feed(message_id, message_payload)

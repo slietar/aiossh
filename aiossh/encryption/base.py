@@ -7,6 +7,8 @@ class Encryption(Protocol):
 
   @staticmethod
   def block_size() -> int:
+    # Guaranteed to be at least 8
+
     ...
 
   @staticmethod
