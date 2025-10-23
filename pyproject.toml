@@ -1,0 +1,8 @@
+[project]
+name = "aiossh"
+version = "0.0"
+requires-python = ">=3.14"
+dependencies = [
+    "aiodrive~=2.0",
+    "cryptography~=46.0",
+]
