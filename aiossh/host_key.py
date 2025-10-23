@@ -3,14 +3,17 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import (ec, ed25519, padding,
-                                                       rsa, utils)
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa, utils
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
-from .structures.keys import (ECDSAIdentifier, encode_ecdsa_public_key,
-                              encode_ecdsa_signature,
-                              encode_ed25519_public_key,
-                              encode_ed25519_signature, encode_rsa_public_key)
+from .structures.keys import (
+  ECDSAIdentifier,
+  encode_ecdsa_public_key,
+  encode_ecdsa_signature,
+  encode_ed25519_public_key,
+  encode_ed25519_signature,
+  encode_rsa_public_key,
+)
 from .structures.primitives import encode_name, encode_string
 
 

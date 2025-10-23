@@ -2,10 +2,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .error import ProtocolError, ProtocolVersionNotSupportedError
-from .version import SSH_PROTOCOL_VERSION
-
 
 # See: RFC 4253 Section 4.2
+
+SSH_PROTOCOL_VERSION = '2.0'
+
 
 @dataclass(kw_only=True, slots=True)
 class IdentString:
@@ -45,7 +46,7 @@ class IdentString:
     else:
       comments = None
 
-    return IdentString(
+    return cls(
       # Encoding of comments is not specified in the RFC, assuming ASCII
       comment=(comments.decode('ascii') if comments else None),
       software_version=software_version,

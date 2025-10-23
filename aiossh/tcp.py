@@ -3,7 +3,7 @@ import contextlib
 from asyncio import Queue, QueueEmpty, QueueFull, StreamReader, StreamWriter
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address, IPv6Address
-from typing import Sequence
+from typing import Sequence, override
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,6 +11,7 @@ class SockName:
   address: IPv4Address | IPv6Address
   port: int
 
+  @override
   def __str__(self):
     return f'{self.address}:{self.port}'
 
@@ -19,7 +20,7 @@ class SockName:
     match name:
       case host, port:
         addr = IPv4Address(host)
-      case host, port, flowinfo, scopeid:
+      case host, port, _flowinfo, _scopeid:
         addr = IPv6Address(host)
       case _:
         raise ValueError(f'Invalid peername: {name}')
@@ -38,11 +39,15 @@ async def serve_tcp(host: Sequence[str] | str, port: int):
       writer.close()
 
   server = await asyncio.start_server(handle_connection_sync, host, port)
-  bindings = frozenset({ SockName.parse(sock.getsockname()) for sock in server.sockets })
+  bindings = frozenset({
+    SockName.parse(sock.getsockname()) for sock in server.sockets
+  })
 
   try:
     yield TcpServer(bindings, queue)
   finally:
+    server.close()
+
     try:
       while True:
         reader, writer = queue.get_nowait()
@@ -50,7 +55,6 @@ async def serve_tcp(host: Sequence[str] | str, port: int):
     except QueueEmpty:
       pass
 
-    server.close()
     await server.wait_closed()
 
 
