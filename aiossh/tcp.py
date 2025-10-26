@@ -1,9 +1,10 @@
 import asyncio
 import contextlib
 from asyncio import Queue, QueueEmpty, QueueFull, StreamReader, StreamWriter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address, IPv6Address
-from typing import Sequence, override
+from typing import override
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +51,7 @@ async def serve_tcp(host: Sequence[str] | str, port: int):
 
     try:
       while True:
-        reader, writer = queue.get_nowait()
+        _reader, writer = queue.get_nowait()
         writer.close()
     except QueueEmpty:
       pass
@@ -98,7 +99,7 @@ class TcpServer:
         server_name,
 
         reader,
-        writer
+        writer,
       )
 
       yield info

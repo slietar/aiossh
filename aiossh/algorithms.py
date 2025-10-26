@@ -2,8 +2,7 @@ import typing
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
-from .error import AlgorithmNegotiationError, ProtocolError
-
+from .error import AlgorithmNegotiationError
 from .messages.kex_init import KexInitMessage
 
 
@@ -59,7 +58,7 @@ class AlgorithmSets:
       encryption_algorithm_client_to_server=cast(EncryptionAlgorithmName, encryption_algorithm_client_to_server),
       encryption_algorithm_server_to_client=cast(EncryptionAlgorithmName, encryption_algorithm_server_to_client),
       mac_algorithm_client_to_server=cast(MacAlgorithmName, mac_algorithm_client_to_server),
-      mac_algorithm_server_to_client=cast(MacAlgorithmName, mac_algorithm_server_to_client)
+      mac_algorithm_server_to_client=cast(MacAlgorithmName, mac_algorithm_server_to_client),
     )
 
 

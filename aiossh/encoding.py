@@ -1,17 +1,28 @@
 import builtins
 import dataclasses
 import inspect
-import os
 import typing
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from types import NoneType, UnionType
 from typing import Annotated, Any, ClassVar, Literal, Self, get_type_hints
 
-from .structures.primitives import (decode_boolean, decode_mpint, decode_name, decode_name_list,
-                                    decode_string, decode_text, decode_uint32,
-                                    encode_boolean, encode_mpint, encode_name, encode_name_list,
-                                    encode_string, encode_text, encode_uint32)
+from .structures.primitives import (
+  decode_boolean,
+  decode_mpint,
+  decode_name,
+  decode_name_list,
+  decode_string,
+  decode_text,
+  decode_uint32,
+  encode_boolean,
+  encode_mpint,
+  encode_name,
+  encode_name_list,
+  encode_string,
+  encode_text,
+  encode_uint32,
+)
 from .util import ReadableBytesIO, ReadableBytesIOImpl
 
 
@@ -37,7 +48,7 @@ class FixedSizeBytesEncoding:
 @dataclass(slots=True)
 class UnionEncoding:
   discriminant: str
-  variants: 'dict[Any, type[Codable]]'
+  variants: dict[Any, type[Codable]]
 
 type Encoding = Literal['boolean', 'mpint', 'name', 'name-list', 'string', 'text', 'uint32'] | CodableEncoding | FixedSizeBytesEncoding | UnionEncoding
 

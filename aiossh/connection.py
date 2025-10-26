@@ -1,9 +1,9 @@
-from collections.abc import Awaitable
 import functools
 import logging
 import operator
 import struct
 from asyncio import StreamReader, StreamWriter, TaskGroup
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from pprint import pprint
 from typing import TYPE_CHECKING, Optional
@@ -50,6 +50,7 @@ from .structures.primitives import encode_mpint
 from .user_auth import run_user_auth
 from .util import ReadableBytesIOImpl
 
+
 if TYPE_CHECKING:
   from .server import Server
 
@@ -88,7 +89,7 @@ class Connection:
   async def read(self, byte_count: int, /):
     # The read byte count may be zero.
 
-    data = bytes()
+    data = b''
 
     while len(data) < byte_count:
       try:
@@ -139,7 +140,7 @@ class Connection:
     if self.encryption_in is not None:
       missing_block_count = (packet_length_size + packet_length - 1) // self.encryption_in.block_size()
       packet_with_length += self.encryption_in.decrypt_blocks(
-        await self.read(self.encryption_in.block_size() * missing_block_count)
+        await self.read(self.encryption_in.block_size() * missing_block_count),
       )
 
       packet_after_length = packet_with_length[packet_length_size:]
@@ -231,7 +232,7 @@ class Connection:
       compression_algorithms_server_to_client=list(supported_algorithms.compression_algorithms_server_to_client),
       languages_client_to_server=[],
       languages_server_to_client=[],
-      first_kex_packet_follows=False
+      first_kex_packet_follows=False,
     )
 
     server_kex_init_payload = self.write_message(server_kex_init)
@@ -302,13 +303,13 @@ class Connection:
 
     self.encryption_out = EncryptionOut(
       key=derive_key(b'D', EncryptionOut.key_size()),
-      iv=derive_key(b'B', EncryptionOut.block_size())
+      iv=derive_key(b'B', EncryptionOut.block_size()),
     )
 
     IntegrityVerificationOut = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_server_to_client)
 
     self.integrity_verification_out = IntegrityVerificationOut(
-      key=derive_key(b'F', IntegrityVerificationOut.key_size())
+      key=derive_key(b'F', IntegrityVerificationOut.key_size()),
     )
 
 
@@ -320,13 +321,13 @@ class Connection:
 
     self.encryption_in = EncryptionIn(
       key=derive_key(b'C', EncryptionIn.key_size()),
-      iv=derive_key(b'A', EncryptionIn.block_size())
+      iv=derive_key(b'A', EncryptionIn.block_size()),
     )
 
     IntegrityVerificationIn = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_client_to_server)
 
     self.integrity_verification_in = IntegrityVerificationIn(
-      key=derive_key(b'E', IntegrityVerificationIn.key_size())
+      key=derive_key(b'E', IntegrityVerificationIn.key_size()),
     )
 
     logger.debug('Done with key exchange')
@@ -353,7 +354,7 @@ class Connection:
 
         self.server_ident_string = IdentString(
           comment=None,
-          software_version=self.server.software_version
+          software_version=self.server.software_version,
         )
 
         self.writer.write(bytes(self.server_ident_string) + b'\r\n')
@@ -361,6 +362,7 @@ class Connection:
 
         # Read client ident string
 
+        # TODO: Improve safety
         client_ident_string_terminated = await self.reader.readuntil(b'\r\n')
 
         if len(client_ident_string_terminated) > 0xff:
@@ -372,7 +374,7 @@ class Connection:
           self.write_message(DisconnectMessage(
             reason_code=DisconnectReason.ProtocolVersionNotSupported,
             description='Protocol version not supported',
-            language_tag=''
+            language_tag='',
           ))
 
           return
@@ -426,7 +428,7 @@ class Connection:
                     self.write_message(DisconnectMessage(
                       reason_code=DisconnectReason.ServiceNotAvailable,
                       description='Service not available',
-                      language_tag=''
+                      language_tag='',
                     ))
 
                     return
@@ -448,13 +450,13 @@ class Connection:
                     recipient_channel_id=msg.sender_channel_id,
                     reason_code=ChannelOpenFailureReason.UnknownChannelType,
                     description='Unknown channel type',
-                    language_tag=''
+                    language_tag='',
                   ))
                 else:
                   self.write_message(ChannelOpenConfirmationMessage(ChannelOpenMessage(
                     max_packet_size=msg.max_packet_size,
                     sender_channel_id=msg.sender_channel_id,
-                    window_size=msg.window_size
+                    window_size=msg.window_size,
                   ), recipient_channel_id=0))
 
               case ChannelRequestMessage.id:
@@ -471,7 +473,7 @@ class Connection:
         self.write_message(DisconnectMessage(
           reason_code=DisconnectReason.KeyExchangeFailed,
           description='Key exchange failed',
-          language_tag=''
+          language_tag='',
         ))
 
         if self.debug:
@@ -481,7 +483,7 @@ class Connection:
         self.write_message(DisconnectMessage(
           reason_code=DisconnectReason.MacError,
           description='Integrity verification error',
-          language_tag=''
+          language_tag='',
         ))
 
         if self.debug:
@@ -491,7 +493,7 @@ class Connection:
         self.write_message(DisconnectMessage(
           reason_code=DisconnectReason.ProtocolError,
           description='Protocol error',
-          language_tag=''
+          language_tag='',
         ))
 
         if self.debug:

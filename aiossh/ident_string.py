@@ -3,6 +3,7 @@ from typing import Optional
 
 from .error import ProtocolError, ProtocolVersionNotSupportedError
 
+
 # See: RFC 4253 Section 4.2
 
 SSH_PROTOCOL_VERSION = '2.0'

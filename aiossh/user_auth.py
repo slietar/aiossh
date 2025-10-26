@@ -2,23 +2,26 @@ from typing import TYPE_CHECKING
 
 from .error import ProtocolError
 from .flow import MessageFlowRead
-from .messages.user_auth import (UserAuthFailureMessage,
-                                 UserAuthPasswordChangeRequestMessage,
-                                 UserAuthPublicKeyOk, UserAuthRequestMessage,
-                                 UserAuthRequestNoneMessage,
-                                 UserAuthRequestPasswordMessage,
-                                 UserAuthRequestPublicKeyMessage,
-                                 UserAuthSuccessMessage)
-from .structures.keys import (decode_ed25519_public_key,
-                              decode_ed25519_signature)
+from .messages.user_auth import (
+  UserAuthFailureMessage,
+  UserAuthPasswordChangeRequestMessage,
+  UserAuthPublicKeyOk,
+  UserAuthRequestMessage,
+  UserAuthRequestNoneMessage,
+  UserAuthRequestPasswordMessage,
+  UserAuthRequestPublicKeyMessage,
+  UserAuthSuccessMessage,
+)
+from .structures.keys import decode_ed25519_public_key, decode_ed25519_signature
 from .structures.primitives import encode_string
 from .util import ReadableBytesIOImpl
+
 
 if TYPE_CHECKING:
   from .connection import Connection
 
 
-async def run_user_auth(conn: 'Connection', read: MessageFlowRead):
+async def run_user_auth(conn: Connection, read: MessageFlowRead):
   request_message, _ = await read(UserAuthRequestMessage)
 
   match request_message:
@@ -32,7 +35,7 @@ async def run_user_auth(conn: 'Connection', read: MessageFlowRead):
       if request_message.signature is None:
         conn.write_message(UserAuthPublicKeyOk(
           algorithm=request_message.algorithm,
-          public_key=request_message.public_key
+          public_key=request_message.public_key,
         ))
       else:
         assert conn.session_id is not None

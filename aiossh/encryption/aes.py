@@ -1,5 +1,11 @@
 from dataclasses import dataclass
-from cryptography.hazmat.primitives.ciphers import Cipher, CipherContext, algorithms, modes
+
+from cryptography.hazmat.primitives.ciphers import (
+  Cipher,
+  CipherContext,
+  algorithms,
+  modes,
+)
 
 from .base import Encryption
 

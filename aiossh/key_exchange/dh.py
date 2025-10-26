@@ -32,7 +32,7 @@ class DhKeyExchange(KeyExchange):
     conn,
     read,
     client_kex_init_payload,
-    server_kex_init_payload
+    server_kex_init_payload,
   ):
     # Receive KexDhGexRequest message
 
@@ -108,7 +108,7 @@ class DhKeyExchange(KeyExchange):
     kex_dh_gex_reply = KexDhGexReplyMessage(
       host_key=encoded_host_public_key,
       f=server_f,
-      signature=signature
+      signature=signature,
     )
 
     conn.write_message(kex_dh_gex_reply)

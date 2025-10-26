@@ -17,6 +17,7 @@ import aiodrive
 import dexc
 from aiodrive import Pool
 
+
 dexc.install()
 
 
@@ -44,7 +45,7 @@ async def create_session(path: Path, terminal_size: os.terminal_size):
     preexec_fn=os.setsid,
     stderr=slave_fd,
     stdin=slave_fd,
-    stdout=slave_fd
+    stdout=slave_fd,
   )
 
   try:
@@ -181,7 +182,7 @@ async def main():
 
     async with create_session(
       path=Path(os.environ['SHELL']),
-      terminal_size=os.get_terminal_size()
+      terminal_size=os.get_terminal_size(),
     ) as session:
       async with Pool.open() as pool:
         pool.spawn(pipe_pty_to_stdout(session))

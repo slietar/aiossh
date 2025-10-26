@@ -1,14 +1,20 @@
-from abc import ABC
 import struct
+from abc import ABC
 from dataclasses import KW_ONLY, dataclass
 from typing import ClassVar, Optional
 
 from ..error import ProtocolError
-from ..structures.primitives import (decode_boolean, decode_name,
-                                     decode_string, decode_text,
-                                     encode_boolean, encode_name,
-                                     encode_name_list, encode_string,
-                                     encode_text)
+from ..structures.primitives import (
+  decode_boolean,
+  decode_name,
+  decode_string,
+  decode_text,
+  encode_boolean,
+  encode_name,
+  encode_name_list,
+  encode_string,
+  encode_text,
+)
 from .base import DecodableMessage, EncodableMessage
 from .types import LanguageTag
 
@@ -38,13 +44,13 @@ class UserAuthRequestMessage(DecodableMessage, ABC):
           public_key_algorithm=decode_name(reader),
           public_host_key=decode_string(reader),
           client_host_name=decode_text(reader),
-          signature=decode_string(reader)
+          signature=decode_string(reader),
         )
 
       case 'none':
         return UserAuthRequestNoneMessage(
           service_name=service_name,
-          user_name=user_name
+          user_name=user_name,
         )
 
       case 'password':
@@ -56,7 +62,7 @@ class UserAuthRequestMessage(DecodableMessage, ABC):
 
           # Order matters
           password=decode_text(reader),
-          new_password=(decode_text(reader) if contains_new_password else None)
+          new_password=(decode_text(reader) if contains_new_password else None),
         )
 
       case 'publickey':
@@ -69,7 +75,7 @@ class UserAuthRequestMessage(DecodableMessage, ABC):
           # Order matters
           algorithm=decode_name(reader),
           public_key=decode_string(reader),
-          signature=(decode_string(reader) if contains_signature else None)
+          signature=(decode_string(reader) if contains_signature else None),
         )
 
       case _:

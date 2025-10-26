@@ -1,11 +1,12 @@
-from asyncio import Event, Future, Lock
 import asyncio
-from dataclasses import dataclass, field
-from typing import Awaitable, Generic, Optional, Protocol, TypeVar
+from asyncio import Event, Future
+from collections.abc import Awaitable
+from dataclasses import dataclass
+from typing import Optional, Protocol, TypeVar
 
 from .error import ProtocolError
 from .messages.base import DecodableMessage
-from .util import ReadableBytesIO, ReadableBytesIOImpl
+from .util import ReadableBytesIOImpl
 
 
 T_DecodableMessage = TypeVar('T_DecodableMessage', bound=DecodableMessage)

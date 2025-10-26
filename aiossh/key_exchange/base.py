@@ -1,6 +1,8 @@
-from typing import TYPE_CHECKING, Awaitable, Protocol
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, Protocol
 
 from ..flow import MessageFlowRead
+
 
 if TYPE_CHECKING:
   from ..connection import Connection

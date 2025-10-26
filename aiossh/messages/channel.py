@@ -3,8 +3,13 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import ClassVar
 
-from ..structures.primitives import (decode_name, decode_uint32, encode_name,
-                                     encode_string, encode_text, encode_uint32)
+from ..structures.primitives import (
+  decode_name,
+  decode_uint32,
+  encode_name,
+  encode_text,
+  encode_uint32,
+)
 from .base import DecodableMessage, EncodableMessage
 from .types import LanguageTag
 
@@ -27,13 +32,13 @@ class ChannelOpenMessage(DecodableMessage, ABC):
       + encode_uint32(self.max_packet_size)
 
   @classmethod
-  def decode(cls, reader) -> 'ChannelOpenMessage':
+  def decode(cls, reader) -> ChannelOpenMessage:
     channel_type = decode_name(reader)
 
     kwargs = dict(
       sender_channel_id=decode_uint32(reader),
       window_size=decode_uint32(reader),
-      max_packet_size=decode_uint32(reader)
+      max_packet_size=decode_uint32(reader),
     )
 
     match channel_type:
@@ -45,7 +50,7 @@ class ChannelOpenMessage(DecodableMessage, ABC):
           recipient_address=decode_name(reader),
           recipient_port=decode_uint32(reader),
           originator_address=decode_name(reader),
-          originator_port=decode_uint32(reader)
+          originator_port=decode_uint32(reader),
         )
 
       case 'forwarded-tcpip':
@@ -56,7 +61,7 @@ class ChannelOpenMessage(DecodableMessage, ABC):
           recipient_address=decode_name(reader),
           recipient_port=decode_uint32(reader),
           originator_address=decode_name(reader),
-          originator_port=decode_uint32(reader)
+          originator_port=decode_uint32(reader),
         )
 
       case 'session':
@@ -68,7 +73,7 @@ class ChannelOpenMessage(DecodableMessage, ABC):
 
           # Order matters
           originator_address=decode_name(reader),
-          originator_port=decode_uint32(reader)
+          originator_port=decode_uint32(reader),
         )
 
       case _:

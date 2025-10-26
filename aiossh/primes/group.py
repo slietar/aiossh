@@ -26,5 +26,5 @@ def select_group(groups: Iterable[Group], min_size: int, preferred_size: int, ma
       # condition is zero and thus minimized
       group.size <= preferred_size,
       abs(group.size - preferred_size),
-    ))
+    )),
   )

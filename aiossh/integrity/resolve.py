@@ -1,8 +1,7 @@
 from ..algorithms import MacAlgorithmName
 from ..error import UnreachableError
 from .base import IntegrityVerification
-from .hmac import (HMACSHA1IntegrityVerification,
-                   HMACSHA256IntegrityVerification)
+from .hmac import HMACSHA1IntegrityVerification, HMACSHA256IntegrityVerification
 
 
 def resolve_integrity_verification(name: MacAlgorithmName, /) -> type[IntegrityVerification]:

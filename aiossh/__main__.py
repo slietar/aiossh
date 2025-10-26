@@ -69,12 +69,12 @@ async def main():
               server.handle(
                 Client(incoming.client_name),
                 incoming.reader,
-                incoming.writer
+                incoming.writer,
               ),
-              name=f'handle-{incoming.client_name}'
+              name=f'handle-{incoming.client_name}',
             )
   except aiodrive.SignalHandledException as e:
-    print("\r", end="")
+    print('\r', end='')
     logger.info(f'Received {signal.Signals(e.signal).name}')
 
 

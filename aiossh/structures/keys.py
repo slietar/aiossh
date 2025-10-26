@@ -5,8 +5,13 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 
 from ..error import ProtocolError
 from ..util import ReadableBytesIO
-from .primitives import (decode_name, decode_string, encode_mpint, encode_name,
-                         encode_string)
+from .primitives import (
+  decode_name,
+  decode_string,
+  encode_mpint,
+  encode_name,
+  encode_string,
+)
 
 
 ## ECDSA
@@ -18,14 +23,14 @@ def encode_ecdsa_public_key(key: ec.EllipticCurvePublicKey, /, identifier: ECDSA
 
   return encode_name(f'ecdsa-sha2-{identifier}') + encode_string(identifier.encode()) + encode_string(key.public_bytes(
     encoding=serialization.Encoding.X962,
-    format=serialization.PublicFormat.UncompressedPoint
+    format=serialization.PublicFormat.UncompressedPoint,
   ))
 
 def encode_ecdsa_signature(r: int, s: int, /, identifier: ECDSAIdentifier):
   # See: RFC 5656 Section 3.1.2
 
   return encode_name(f'ecdsa-sha2-{identifier}') + encode_string(
-    encode_mpint(r) + encode_mpint(s)
+    encode_mpint(r) + encode_mpint(s),
   )
 
 
@@ -36,7 +41,7 @@ def encode_ecdsa_signature(r: int, s: int, /, identifier: ECDSAIdentifier):
 def encode_ed25519_public_key(key: ed25519.Ed25519PublicKey, /):
   return encode_name('ssh-ed25519') + encode_string(key.public_bytes(
     encoding=serialization.Encoding.Raw,
-    format=serialization.PublicFormat.Raw
+    format=serialization.PublicFormat.Raw,
   ))
 
 def decode_ed25519_public_key(reader: ReadableBytesIO):

@@ -2,10 +2,9 @@ import struct
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .base import DecodableMessage, EncodableMessage
-
 from ..structures.primitives import decode_mpint, encode_mpint, encode_string
 from ..util import ReadableBytesIO
+from .base import DecodableMessage, EncodableMessage
 
 
 # Client-only
@@ -25,7 +24,7 @@ class KexDhGexRequestMessage(DecodableMessage):
     return cls(
       min=min,
       n=n,
-      max=max
+      max=max,
     )
 
 

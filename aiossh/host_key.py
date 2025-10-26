@@ -74,7 +74,7 @@ class ECDSAHostKey(HostKey[ECDSAHostKeyAlgorithmName]):
     return cast(ECDSAIdentifier, {
       'secp256r1': 'nistp256',
       'secp384r1': 'nistp384',
-      'secp521r1': 'nistp521'
+      'secp521r1': 'nistp521',
     }[self.private_key.curve.name])
 
   def algorithm(self):
@@ -102,7 +102,7 @@ class ECDSAHostKey(HostKey[ECDSAHostKeyAlgorithmName]):
     return self.private_key.private_bytes(
       encoding=serialization.Encoding.PEM,
       format=serialization.PrivateFormat.PKCS8,
-      encryption_algorithm=serialization.NoEncryption()
+      encryption_algorithm=serialization.NoEncryption(),
     )
 
   def __setstate__(self, state: bytes):
@@ -144,7 +144,7 @@ class RSAHostKey(HostKey[RSAHostKeyAlgorithmName]):
     return self.supported_algorithms, self.private_key.private_bytes(
       encoding=serialization.Encoding.PEM,
       format=serialization.PrivateFormat.PKCS8,
-      encryption_algorithm=serialization.NoEncryption()
+      encryption_algorithm=serialization.NoEncryption(),
     )
 
   def __setstate__(self, state: tuple):

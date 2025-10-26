@@ -1,8 +1,9 @@
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from os import PathLike
 from pathlib import Path
-from typing import IO, Iterable, Literal, Optional, cast
+from typing import IO, Literal, Optional, cast
 
 
 # See: man moduli
@@ -25,7 +26,7 @@ def load_paths(paths: Optional[Iterable[PathLike | str]] = None):
   if paths is None:
     paths = [
       '/etc/ssh/moduli',
-      '/usr/local/etc/moduli'
+      '/usr/local/etc/moduli',
     ]
 
   for raw_path in paths:
@@ -33,8 +34,7 @@ def load_paths(paths: Optional[Iterable[PathLike | str]] = None):
 
     if path.exists():
       with path.open('r') as file:
-        for prime in load_file(file):
-          yield prime
+        yield from load_file(file)
 
       break
   else:
@@ -50,7 +50,7 @@ def load_file(file: IO[str]):
       raw_timestamp,
       raw_prime_time,
       raw_tests,
-      tries,
+      _tries,
       raw_size,
       raw_generator,
       modulus,
@@ -69,6 +69,6 @@ def load_file(file: IO[str]):
       type=cast(PrimeType, {
         0: 'unknown',
         2: 'safe',
-        4: 'sophie_germain'
+        4: 'sophie_germain',
       }[int(raw_prime_time)]),
     )
