@@ -21,7 +21,7 @@ class MessageFlow:
   future: Optional[Future[tuple[int, bytes]]] = None
 
   async def feed(self, message_id: int, payload: bytes, /):
-    if not self.future:
+    if self.future is None:
       raise ProtocolError('Not reading')
 
     self.future.set_result((message_id, payload))
@@ -31,12 +31,13 @@ class MessageFlow:
     await self.event.wait()
 
   async def read(self, message_type: type[T_DecodableMessage], /) -> tuple[T_DecodableMessage, bytes]:
-    if self.future:
+    if self.future is not None:
       raise RuntimeError('Already reading')
 
-    self.future = Future()
+    future = Future()
+    self.future = future
 
-    message_id, payload = await self.future
+    message_id, payload = await asyncio.shield(future)
     self.future = None
 
     assert self.event is not None

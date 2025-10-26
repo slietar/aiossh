@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional
 
 import aiodrive
 
-from .algorithms import AlgorithmSelection
+from .algorithms import AlgorithmSelection, AlgorithmSets
 from .client import BaseClient
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
@@ -93,7 +93,7 @@ class Connection:
     while len(data) < byte_count:
       try:
         chunk = await self.reader.read(byte_count - len(data))
-      except ConnectionResetError as e:
+      except ConnectionError as e: # Parent class of BrokenPipeError, ConnectionResetError, and others
         raise ConnectionClosedError from e
 
       if not chunk:
@@ -105,6 +105,10 @@ class Connection:
 
 
   async def read_message(self):
+    block_size_or_zero = self.encryption_in.block_size() if self.encryption_in is not None else 0
+    digest_size_or_zero = self.integrity_verification_in.digest_size() if self.integrity_verification_in is not None else 0
+
+
     # Read packet length (without the length itself) or first block
 
     packet_length_size = 4
@@ -125,12 +129,15 @@ class Connection:
     packet_length = struct.unpack('>I', packet_length_bytes)[0]
 
     # The packet must at least contain the padding length byte.
-    if packet_length < 1:
+    if packet_length < padding_length_size:
+      raise ProtocolError
+
+    # The total packet size, with length and MAC, must not exceed 35,000 bytes.
+    if packet_length_size + packet_length + digest_size_or_zero > 35000:
       raise ProtocolError
 
     if self.encryption_in is not None:
-      # TODO: Change to ensure missing_block_count >= 0
-      missing_block_count = (packet_length + 4) // self.encryption_in.block_size() - 1
+      missing_block_count = (packet_length_size + packet_length - 1) // self.encryption_in.block_size()
       packet_with_length += self.encryption_in.decrypt_blocks(
         await self.read(self.encryption_in.block_size() * missing_block_count)
       )
@@ -143,7 +150,6 @@ class Connection:
     padding_length = packet_after_length[0]
     payload_length = packet_length - padding_length - padding_length_size
 
-    block_size_or_zero = self.encryption_in.block_size() if self.encryption_in is not None else 0
     padding_alignment = max(block_size_or_zero, 8)
 
     # Packet size without the mac
@@ -153,6 +159,8 @@ class Connection:
       raise ProtocolError
 
     payload = packet_after_length[padding_length_size:(padding_length_size + payload_length)]
+
+    # TODO: Compression + check if uncompressed size is < 32,768 bytes (RFC 4253 Section 6.1)
 
 
     # Verify integrity using MAC
@@ -178,7 +186,10 @@ class Connection:
 
   def write_message(self, message: EncodableMessage):
     payload = message.encode_payload()
-    sized_packet = encode_packet(payload, block_size=(self.encryption_out.block_size() if self.encryption_out else None))
+    sized_packet = encode_packet(
+      payload,
+      block_size=(self.encryption_out.block_size() if self.encryption_out else None),
+    )
 
     if self.encryption_out is not None:
       self.writer.write(self.encryption_out.encrypt_blocks(sized_packet))
@@ -195,15 +206,18 @@ class Connection:
 
 
   async def run_key_exchange(self):
+    # See: RFC 4253 Section 7
+
     # Create key exchange flow
 
+    assert self.key_exchange_flow is None
     self.key_exchange_flow = MessageFlow()
-    read = self.key_exchange_flow.read
+    read_message = self.key_exchange_flow.read
 
 
     # Send server KexInit message
 
-    supported_algorithms = self.client.get_supported_algorithms()
+    supported_algorithms = AlgorithmSets()
     supported_algorithms.server_host_key_algorithms &= functools.reduce(operator.or_, (key.algorithms() for key in self.server.host_keys))
 
     server_kex_init = KexInitMessage(
@@ -221,11 +235,12 @@ class Connection:
     )
 
     server_kex_init_payload = self.write_message(server_kex_init)
+    read_client_kex_init = read_message(KexInitMessage)
 
 
     # Read client KexInit message
 
-    client_kex_init, client_kex_init_payload = await read(KexInitMessage)
+    client_kex_init, client_kex_init_payload = await read_client_kex_init
 
 
     # Negotiate algorithms
@@ -234,12 +249,31 @@ class Connection:
     self.host_key = next(key for key in self.server.host_keys if self.algorithm_selection.server_host_key_algorithm in key.algorithms())
 
 
+    # Ignore next packet if the preferred algorithms do not match
+
+    if client_kex_init.first_kex_packet_follows and (
+      (self.algorithm_selection.kex_algorithm != client_kex_init.kex_algorithms[0])
+      or (self.algorithm_selection.server_host_key_algorithm != client_kex_init.server_host_key_algorithms[0])
+      or (self.algorithm_selection.encryption_algorithm_client_to_server != client_kex_init.encryption_algorithms_client_to_server[0])
+      or (self.algorithm_selection.encryption_algorithm_server_to_client != client_kex_init.encryption_algorithms_server_to_client[0])
+      or (self.algorithm_selection.mac_algorithm_client_to_server != client_kex_init.mac_algorithms_client_to_server[0])
+      or (self.algorithm_selection.mac_algorithm_server_to_client != client_kex_init.mac_algorithms_server_to_client[0])
+    ):
+      # TODO: Skip next packet
+      raise NotImplementedError
+
+
     # Run key exchange
 
     CurrentKeyExchange = resolve_key_exchange(self.algorithm_selection.kex_algorithm)
 
     key_exchange = CurrentKeyExchange()
-    exchange_hash, shared_key = await key_exchange.run(self, read, client_kex_init_payload, server_kex_init_payload)
+    exchange_hash, shared_key = await key_exchange.run(
+      self,
+      read_message,
+      client_kex_init_payload,
+      server_kex_init_payload,
+    )
 
 
     # Compute key exchange output
@@ -280,7 +314,7 @@ class Connection:
 
     # Establish input algorithms
 
-    await read(NewKeysMessage)
+    await read_message(NewKeysMessage)
 
     EncryptionIn = resolve_encryption(self.algorithm_selection.encryption_algorithm_client_to_server)
 
@@ -294,6 +328,8 @@ class Connection:
     self.integrity_verification_in = IntegrityVerificationIn(
       key=derive_key(b'E', IntegrityVerificationIn.key_size())
     )
+
+    logger.debug('Done with key exchange')
 
 
     # Finish flow
@@ -312,151 +348,158 @@ class Connection:
 
   async def handle(self):
     try:
-      # Send server ident string
-
-      self.server_ident_string = IdentString(
-        comment=None,
-        software_version=self.server.software_version
-      )
-
-      self.writer.write(bytes(self.server_ident_string) + b'\r\n')
-
-
-      # Read client ident string
-
-      client_ident_string_terminated = await self.reader.readuntil(b'\r\n')
-
-      if len(client_ident_string_terminated) > 0xff:
-        raise ProtocolError
-
       try:
-        self.client_ident_string = IdentString.decode(client_ident_string_terminated[:-2])
-      except ProtocolVersionNotSupportedError:
+        # Send server ident string
+
+        self.server_ident_string = IdentString(
+          comment=None,
+          software_version=self.server.software_version
+        )
+
+        self.writer.write(bytes(self.server_ident_string) + b'\r\n')
+
+
+        # Read client ident string
+
+        client_ident_string_terminated = await self.reader.readuntil(b'\r\n')
+
+        if len(client_ident_string_terminated) > 0xff:
+          raise ProtocolError
+
+        try:
+          self.client_ident_string = IdentString.decode(client_ident_string_terminated[:-2])
+        except ProtocolVersionNotSupportedError:
+          self.write_message(DisconnectMessage(
+            reason_code=DisconnectReason.ProtocolVersionNotSupported,
+            description='Protocol version not supported',
+            language_tag=''
+          ))
+
+          return
+
+        logger.debug(f'Client version: "{self.client_ident_string.software_version}"')
+
+
+        # Listen for messages
+
+        async def wrap[T](awaitable: Awaitable[T], /):
+          return await awaitable
+
+        async with TaskGroup() as group:
+          while True:
+            message_payload, message_sequence_number = await self.read_message()
+
+            if len(message_payload) < 1:
+              raise ProtocolError
+
+            message_id = message_payload[0]
+
+            logger.debug(f'Received message id {message_id} (sequence number {message_sequence_number})')
+
+            # See: RFC 4250 Section 4.1
+
+            match message_id:
+              case KexInitMessage.id:
+                if self.key_exchange_flow is None:
+                  group.create_task(wrap(aiodrive.prime(self.run_key_exchange())), name='key_exchange')
+
+                assert self.key_exchange_flow is not None
+                await self.key_exchange_flow.feed(message_id, message_payload)
+
+              case _ if (message_id == NewKeysMessage.id) or (30 <= message_id <= 49):
+                if self.key_exchange_flow is None:
+                  raise ProtocolError
+
+                await self.key_exchange_flow.feed(message_id, message_payload)
+
+              case ServiceRequestMessage.id:
+                if self.key_exchange_flow is not None:
+                  raise ProtocolError
+
+                message_payload_io = ReadableBytesIOImpl(message_payload[1:])
+                service_request = ServiceRequestMessage.decode(message_payload_io)
+
+                match service_request.service_name:
+                  case 'ssh-userauth':
+                    self.write_message(ServiceAcceptMessage(service_name=service_request.service_name))
+                  case _:
+                    self.write_message(DisconnectMessage(
+                      reason_code=DisconnectReason.ServiceNotAvailable,
+                      description='Service not available',
+                      language_tag=''
+                    ))
+
+                    return
+
+              case UserAuthRequestMessage.id:
+                if self.user_auth_flow is not None:
+                  raise ProtocolError
+
+                group.create_task(wrap(aiodrive.prime(self.start_user_auth())), name='user_auth')
+
+                assert self.user_auth_flow is not None
+                await self.user_auth_flow.feed(message_id, message_payload) # type: ignore
+
+              case ChannelOpenMessage.id:
+                msg = ChannelOpenMessage.decode(ReadableBytesIOImpl(message_payload[1:]))
+
+                if isinstance(msg, ChannelOpenUnknownMessage):
+                  self.write_message(ChannelOpenFailureMessage(
+                    recipient_channel_id=msg.sender_channel_id,
+                    reason_code=ChannelOpenFailureReason.UnknownChannelType,
+                    description='Unknown channel type',
+                    language_tag=''
+                  ))
+                else:
+                  self.write_message(ChannelOpenConfirmationMessage(ChannelOpenMessage(
+                    max_packet_size=msg.max_packet_size,
+                    sender_channel_id=msg.sender_channel_id,
+                    window_size=msg.window_size
+                  ), recipient_channel_id=0))
+
+              case ChannelRequestMessage.id:
+                msg = ChannelRequestMessage.decode(ReadableBytesIOImpl(message_payload[1:]))
+                pprint(msg)
+
+              case _:
+                self.write_message(UnimplementedMessage(message_sequence_number))
+
+                if self.debug:
+                  raise ProtocolError(f'Unknown message id {message_id}')
+
+      except AlgorithmNegotiationError:
         self.write_message(DisconnectMessage(
-          reason_code=DisconnectReason.ProtocolVersionNotSupported,
-          description='Protocol version not supported',
+          reason_code=DisconnectReason.KeyExchangeFailed,
+          description='Key exchange failed',
           language_tag=''
         ))
 
-        return
+        if self.debug:
+          raise
 
-      logger.debug(f'Client version: "{self.client_ident_string.software_version}"')
+      except IntegrityVerificationError:
+        self.write_message(DisconnectMessage(
+          reason_code=DisconnectReason.MacError,
+          description='Integrity verification error',
+          language_tag=''
+        ))
 
+        if self.debug:
+          raise
 
-      # Listen for messages
+      except ProtocolError:
+        self.write_message(DisconnectMessage(
+          reason_code=DisconnectReason.ProtocolError,
+          description='Protocol error',
+          language_tag=''
+        ))
 
-      async def wrap[T](awaitable: Awaitable[T], /):
-        return await awaitable
+        if self.debug:
+          raise
 
-      async with TaskGroup() as group:
-        group.create_task(wrap(aiodrive.prime(self.run_key_exchange())), name='key_exchange')
-
-        while True:
-          message_payload, message_sequence_number = await self.read_message()
-
-          # See: RFC 4250 Section 4.1
-
-          match (message_id := message_payload[0]):
-            case KexInitMessage.id:
-              if self.key_exchange_flow is None:
-                group.create_task(wrap(aiodrive.prime(self.run_key_exchange())), name='key_exchange')
-
-              assert self.key_exchange_flow is not None
-              await self.key_exchange_flow.feed(message_id, message_payload)
-
-            case _ if (message_id == NewKeysMessage.id) or (30 <= message_id <= 49):
-              if self.key_exchange_flow is None:
-                raise ProtocolError
-
-              await self.key_exchange_flow.feed(message_id, message_payload)
-
-            case ServiceRequestMessage.id:
-              if self.key_exchange_flow is not None:
-                raise ProtocolError
-
-              message_payload_io = ReadableBytesIOImpl(message_payload[1:])
-              service_request = ServiceRequestMessage.decode(message_payload_io)
-
-              match service_request.service_name:
-                case 'ssh-userauth':
-                  self.write_message(ServiceAcceptMessage(service_name=service_request.service_name))
-                case _:
-                  self.write_message(DisconnectMessage(
-                    reason_code=DisconnectReason.ServiceNotAvailable,
-                    description='Service not available',
-                    language_tag=''
-                  ))
-
-                  return
-
-            case UserAuthRequestMessage.id:
-              if self.user_auth_flow is not None:
-                raise ProtocolError
-
-              group.create_task(wrap(aiodrive.prime(self.start_user_auth())), name='user_auth')
-
-              assert self.user_auth_flow is not None
-              await self.user_auth_flow.feed(message_id, message_payload)
-
-            case ChannelOpenMessage.id:
-              msg = ChannelOpenMessage.decode(ReadableBytesIOImpl(message_payload[1:]))
-
-              if isinstance(msg, ChannelOpenUnknownMessage):
-                self.write_message(ChannelOpenFailureMessage(
-                  recipient_channel_id=msg.sender_channel_id,
-                  reason_code=ChannelOpenFailureReason.UnknownChannelType,
-                  description='Unknown channel type',
-                  language_tag=''
-                ))
-              else:
-                self.write_message(ChannelOpenConfirmationMessage(ChannelOpenMessage(
-                  max_packet_size=msg.max_packet_size,
-                  sender_channel_id=msg.sender_channel_id,
-                  window_size=msg.window_size
-                ), recipient_channel_id=0))
-
-            case ChannelRequestMessage.id:
-              msg = ChannelRequestMessage.decode(ReadableBytesIOImpl(message_payload[1:]))
-              pprint(msg)
-
-            case _:
-              self.write_message(UnimplementedMessage(message_sequence_number))
-
-              if self.debug:
-                raise ProtocolError(f'Unknown message id {message_id}')
-
-    except AlgorithmNegotiationError:
-      self.write_message(DisconnectMessage(
-        reason_code=DisconnectReason.KeyExchangeFailed,
-        description='Key exchange failed',
-        language_tag=''
-      ))
-
-      if self.debug:
-        raise
-
-    except IntegrityVerificationError:
-      self.write_message(DisconnectMessage(
-        reason_code=DisconnectReason.MacError,
-        description='Integrity verification error',
-        language_tag=''
-      ))
-
-      if self.debug:
-        raise
-
-    except ProtocolError:
-      self.write_message(DisconnectMessage(
-        reason_code=DisconnectReason.ProtocolError,
-        description='Protocol error',
-        language_tag=''
-      ))
-
-      if self.debug:
-        raise
-
-    except ConnectionClosedError:
+    except* ConnectionClosedError:
       pass
 
     finally:
       self.writer.close()
+      logger.debug('Closed connection')
