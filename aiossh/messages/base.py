@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import ClassVar, Self
 
 from ..encoding import CodableABC
-from ..util import ReadableBytesIO
+from ..util import ReadableBytesIO, ReadableBytesIOImpl
 
 
 class DecodableMessage(ABC):
@@ -16,6 +16,13 @@ class DecodableMessage(ABC):
   @abstractmethod
   def decode(cls, reader: ReadableBytesIO) -> Self:
     ...
+
+  @classmethod
+  def decode_payload(cls, payload: bytes) -> Self:
+    assert payload[0] == cls.id
+
+    with ReadableBytesIOImpl(payload[1:]) as reader:
+      return cls.decode(reader)
 
 
 class EncodableMessage(ABC):

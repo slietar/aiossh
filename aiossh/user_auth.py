@@ -31,11 +31,14 @@ if TYPE_CHECKING:
   from .connection import Connection
 
 
+# TODO: Implement "keyboard-interactive" authentication method (RFC 4256), which is not stateless
+# TODO: Implement "gssapi-with-mic" authentication method (RFC 4462)
+# TODO: Implement banner message
+
+
 async def run_user_auth(conn: Connection, read: MessageFlowRead):
   request_message, _ = await read(UserAuthRequestMessage)
-  supported_methods: list[AuthenticationMethodName] = ['publickey']
-
-  __import__('pprint').pprint(request_message)
+  supported_methods: list[AuthenticationMethodName] = ['none', 'publickey']
 
   match request_message:
     case UserAuthRequestNoneMessage():

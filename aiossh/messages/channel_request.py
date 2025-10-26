@@ -132,8 +132,9 @@ class ChannelRequestMessage(Codable, DecodableMessage):
     | ChannelRequestDetailsSignal
     | ChannelRequestDetailsExitStatus
     | ChannelRequestDetailsExitSignal
-    | None
-  , UnionAnnotation('request_type', 'key')]
+    | None,
+    UnionAnnotation('request_type', 'key'),
+  ]
 
 
 ## Channel request response messages

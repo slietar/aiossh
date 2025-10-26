@@ -35,7 +35,13 @@ from .messages.channel import (
   ChannelOpenMessage,
   ChannelOpenUnknownMessage,
 )
-from .messages.channel_request import ChannelRequestMessage
+from .messages.channel_request import (
+  ChannelRequestDetailsEnv,
+  ChannelRequestDetailsPtyReq,
+  ChannelRequestDetailsShell,
+  ChannelRequestMessage,
+  ChannelSuccessMessage,
+)
 from .messages.core import (
   DisconnectMessage,
   DisconnectReason,
@@ -401,6 +407,23 @@ class Connection:
             # See: RFC 4250 Section 4.1
 
             match message_id:
+              case DisconnectMessage.id:
+                message = DisconnectMessage.decode_payload(message_payload)
+                log_string = 'Client disconnected with reason '
+
+                try:
+                  reason = DisconnectReason(message.reason_code)
+                except ValueError:
+                  log_string += f'{message.reason_code}'
+                else:
+                  log_string += f'{reason.name}'
+
+                if message.description:
+                  log_string += f' and message "{message.description}"'
+
+                logger.error(log_string)
+                return
+
               case KexInitMessage.id:
                 if self.key_exchange_flow is None:
                   group.create_task(wrap(aiodrive.prime(self.run_key_exchange())), name='key_exchange')
@@ -443,7 +466,7 @@ class Connection:
                 await self.user_auth_flow.feed(message_id, message_payload) # type: ignore
 
               case ChannelOpenMessage.id:
-                msg = ChannelOpenMessage.decode(ReadableBytesIOImpl(message_payload[1:]))
+                msg = ChannelOpenMessage.decode_payload(message_payload)
 
                 if isinstance(msg, ChannelOpenUnknownMessage):
                   self.write_message(ChannelOpenFailureMessage(
@@ -453,15 +476,33 @@ class Connection:
                     language_tag='',
                   ))
                 else:
+                  logger.debug(f'Opening channel of type {type(msg).__name__}')
+
                   self.write_message(ChannelOpenConfirmationMessage(ChannelOpenMessage(
                     max_packet_size=msg.max_packet_size,
-                    sender_channel_id=msg.sender_channel_id,
+                    sender_channel_id=0,
                     window_size=msg.window_size,
-                  ), recipient_channel_id=0))
+                  ), recipient_channel_id=msg.sender_channel_id))
 
               case ChannelRequestMessage.id:
-                msg = ChannelRequestMessage.decode(ReadableBytesIOImpl(message_payload[1:]))
-                pprint(msg)
+                msg = ChannelRequestMessage.decode_payload(message_payload)
+
+                match msg.details:
+                  case ChannelRequestDetailsEnv():
+                    logger.debug(f'Setting environment variable {msg.details.name.decode('ascii')}={msg.details.value.decode('ascii')}')
+                  case ChannelRequestDetailsPtyReq():
+                    logger.debug('Requesting PTY')
+                    # pprint(msg.details)
+                  case ChannelRequestDetailsShell():
+                    logger.debug('Starting shell')
+                  case _:
+                    print('Unsupported channel request details')
+                    pprint(msg)
+
+                if msg.want_reply:
+                  self.write_message(ChannelSuccessMessage(
+                    recipient_channel_id=msg.recipient_channel_id,
+                  ))
 
               case _:
                 self.write_message(UnimplementedMessage(message_sequence_number))

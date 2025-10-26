@@ -26,7 +26,7 @@ logger.debug(f'Process id: {os.getpid()}')
 
 class Client(BaseClient):
   def __init__(self, name: SockName):
-    print(f'New connection from {name}')
+    logger.debug(f'New connection from {name}')
 
 
 async def main():
