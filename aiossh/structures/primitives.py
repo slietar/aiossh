@@ -1,5 +1,6 @@
 import math
 import struct
+from typing import Optional
 
 from ..error import ProtocolError
 from ..util import ReadableBytesIO, ReadableBytesIOImpl
@@ -45,8 +46,12 @@ def decode_mpint(reader: ReadableBytesIO):
 def encode_string(value: bytes, /):
   return struct.pack('>I', len(value)) + value
 
-def decode_string(reader: ReadableBytesIO):
+def decode_string(reader: ReadableBytesIO, *, size: Optional[int] = None):
   length: int = struct.unpack('>I', reader.read(4))[0]
+
+  if (size is not None) and (length != size):
+    raise ProtocolError
+
   return reader.read(length)
 
 

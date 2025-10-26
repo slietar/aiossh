@@ -1,7 +1,7 @@
 import struct
 from abc import ABC
 from dataclasses import KW_ONLY, dataclass
-from typing import ClassVar, Optional
+from typing import ClassVar, Literal, Optional
 
 from ..error import ProtocolError
 from ..structures.primitives import (
@@ -20,6 +20,8 @@ from .types import LanguageTag
 
 
 # See: RFC 4252
+
+type AuthenticationMethodName = Literal['password', 'publickey', 'hostbased', 'none']
 
 @dataclass(slots=True)
 class UserAuthRequestMessage(DecodableMessage, ABC):
@@ -100,13 +102,15 @@ class UserAuthRequestPublicKeyMessage(UserAuthRequestMessage):
   signature: Optional[bytes]
 
   def encode_signed(self):
-    return bytes([self.id])\
-      + encode_text(self.user_name)\
-      + encode_text(self.service_name)\
-      + encode_name('publickey')\
-      + encode_boolean(True)\
-      + encode_name(self.algorithm)\
+    return (
+      bytes([self.id])
+      + encode_text(self.user_name)
+      + encode_text(self.service_name)
+      + encode_name('publickey')
+      + encode_boolean(True)
+      + encode_name(self.algorithm)
       + encode_string(self.public_key)
+    )
 
 @dataclass(slots=True)
 class UserAuthRequestPasswordMessage(UserAuthRequestMessage):
@@ -119,7 +123,7 @@ class UserAuthFailureMessage(EncodableMessage):
   id: ClassVar[int] = 51
 
   partial_success: bool = False
-  supported_methods: list[str]
+  supported_methods: list[AuthenticationMethodName]
 
   def encode(self):
     return encode_name_list(self.supported_methods) + struct.pack('?', self.partial_success)

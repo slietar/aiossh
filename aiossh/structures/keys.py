@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from ..error import ProtocolError
 from ..util import ReadableBytesIO
 from .primitives import (
+  decode_mpint,
   decode_name,
   decode_string,
   encode_mpint,
@@ -48,7 +49,7 @@ def decode_ed25519_public_key(reader: ReadableBytesIO):
   if decode_name(reader) != 'ssh-ed25519':
     raise ProtocolError
 
-  return ed25519.Ed25519PublicKey.from_public_bytes(decode_string(reader))
+  return ed25519.Ed25519PublicKey.from_public_bytes(decode_string(reader, size=32))
 
 
 # See: RFC 8709 Section 6
@@ -65,8 +66,23 @@ def decode_ed25519_signature(reader: ReadableBytesIO):
 
 ## RSA
 
-def encode_rsa_public_key(key: rsa.RSAPublicKey, /):
-  # See: RFC 4256 Section 6.6
+# See: RFC 4253 Section 6.6
 
+def encode_rsa_public_key(key: rsa.RSAPublicKey, /):
   numbers = key.public_numbers()
   return encode_name('ssh-rsa') + encode_mpint(numbers.e) + encode_mpint(numbers.n)
+
+def decode_rsa_public_key(reader: ReadableBytesIO):
+  if decode_name(reader) != 'ssh-rsa':
+    raise ProtocolError
+
+  e = decode_mpint(reader)
+  n = decode_mpint(reader)
+
+  return rsa.RSAPublicNumbers(e=e, n=n).public_key()
+
+def decode_rsa_signature(reader: ReadableBytesIO):
+  if decode_name(reader) != 'ssh-rsa':
+    raise ProtocolError
+
+  return decode_string(reader)
