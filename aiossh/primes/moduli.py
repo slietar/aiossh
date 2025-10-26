@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-import os
+from os import PathLike
 from pathlib import Path
 from typing import IO, Iterable, Literal, Optional, cast
 
@@ -10,18 +10,18 @@ from typing import IO, Iterable, Literal, Optional, cast
 type PrimeType = Literal['safe', 'sophie_germain', 'unknown']
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class Prime:
+class GroupRecord:
   generator: int
+  prime: int = field(repr=False)
   size: int
   test_composite: bool
   test_probabilistic: bool
   test_sieve: bool
   time: datetime
   type: PrimeType
-  value: int = field(repr=False)
 
 
-def load_paths(paths: Optional[Iterable[os.PathLike | str]] = None):
+def load_paths(paths: Optional[Iterable[PathLike | str]] = None):
   if paths is None:
     paths = [
       '/etc/ssh/moduli',
@@ -40,6 +40,7 @@ def load_paths(paths: Optional[Iterable[os.PathLike | str]] = None):
   else:
     raise FileNotFoundError('No moduli file found')
 
+
 def load_file(file: IO[str]):
   for line in file:
     if line[0] == '#':
@@ -57,8 +58,9 @@ def load_file(file: IO[str]):
 
     tests = int(raw_tests)
 
-    yield Prime(
+    yield GroupRecord(
       generator=int(raw_generator),
+      prime=int(modulus, 16),
       size=int(raw_size),
       test_composite=((tests & 0x01) > 0),
       test_probabilistic=((tests & 0x04) > 0),
@@ -69,21 +71,4 @@ def load_file(file: IO[str]):
         2: 'safe',
         4: 'sophie_germain'
       }[int(raw_prime_time)]),
-      value=int(modulus, 16)
     )
-
-
-def find_prime(primes: Iterable[Prime], min_size: int, preferred_size: int, max_size: int):
-  best_candidate: Optional[Prime] = None
-
-  for prime in primes:
-    if (prime.size < min_size) or (prime.size > max_size) or (prime.type != 'safe') or (not prime.test_sieve):
-      continue
-
-    if (prime.size == preferred_size - 1) or (prime.size == preferred_size):
-      return prime
-
-    if (best_candidate is None) or (abs(prime.size - preferred_size) < abs(best_candidate.size - preferred_size)):
-      best_candidate = prime
-
-  return best_candidate

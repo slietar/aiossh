@@ -6,7 +6,8 @@ from typing import Protocol
 from .client import BaseClient
 from .connection import Connection
 from .host_key import HostKey
-from .prime import Prime, load_paths
+from .primes.group import Group
+from .primes.well_known import groups as well_known_dh_groups
 
 
 class CreateClientType(Protocol):
@@ -17,7 +18,7 @@ class CreateClientType(Protocol):
 class Server:
   host_keys: list[HostKey]
 
-  primes: list[Prime] = field(default_factory=(lambda: list(load_paths())))
+  dh_groups: list[Group] = field(default_factory=(lambda: well_known_dh_groups))
   software_version: str = 'aiossh_0.0.0'
 
   async def handle(self, client: BaseClient, reader: StreamReader, writer: StreamWriter):
