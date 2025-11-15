@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import ClassVar
 
+from ..encoding import Codable
 from ..structures.primitives import (
   decode_name,
   decode_uint32,
@@ -10,11 +11,14 @@ from ..structures.primitives import (
   encode_text,
   encode_uint32,
 )
-from .base import DecodableMessage, EncodableMessage
+from .base import DecodableMessage, EncodableMessage, Message
 from .types import LanguageTag
 
 
 # See: RFC 4254
+
+
+# Open messages
 
 @dataclass(kw_only=True, slots=True)
 class ChannelOpenMessage(DecodableMessage, ABC):
@@ -174,3 +178,33 @@ class ChannelOpenFailureMessage(EncodableMessage):
       + encode_uint32(self.reason_code)\
       + encode_text(self.description)\
       + encode_name(self.language_tag)
+
+
+# Data messages
+
+class DataTypeCode(IntEnum):
+  Stderr = 1
+
+@dataclass(kw_only=True, slots=True)
+class ChannelDataMessage(Codable, Message):
+  id: ClassVar[int] = 94
+
+  recipient_channel_id: int
+  data: bytes
+
+@dataclass(kw_only=True, slots=True)
+class ChannelExtendedDataMessage(Codable, Message):
+  id: ClassVar[int] = 95
+
+  recipient_channel_id: int
+  data_type_code: int
+  data: bytes
+
+
+# EOF message
+
+@dataclass(kw_only=True, slots=True)
+class ChannelEofMessage(Codable, Message):
+  id: ClassVar[int] = 96
+
+  recipient_channel_id: int

@@ -29,6 +29,7 @@ from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import EncodableMessage
 from .messages.channel import (
+  ChannelDataMessage,
   ChannelOpenConfirmationMessage,
   ChannelOpenFailureMessage,
   ChannelOpenFailureReason,
@@ -492,17 +493,28 @@ class Connection:
                     logger.debug(f'Setting environment variable {msg.details.name.decode('ascii')}={msg.details.value.decode('ascii')}')
                   case ChannelRequestDetailsPtyReq():
                     logger.debug('Requesting PTY')
-                    # pprint(msg.details)
+                    __import__('pprint').pprint(msg.details.term_modes)
                   case ChannelRequestDetailsShell():
                     logger.debug('Starting shell')
                   case _:
                     print('Unsupported channel request details')
                     pprint(msg)
 
+                    raise ProtocolError
+
                 if msg.want_reply:
                   self.write_message(ChannelSuccessMessage(
                     recipient_channel_id=msg.recipient_channel_id,
                   ))
+
+              case ChannelDataMessage.id:
+                message = ChannelDataMessage.decode_payload(message_payload)
+                __import__('pprint').pprint(message)
+
+                self.write_message(ChannelDataMessage(
+                  recipient_channel_id=message.recipient_channel_id,
+                  data=message.data.replace(b'\r', b'\n'),
+                ))
 
               case _:
                 self.write_message(UnimplementedMessage(message_sequence_number))
