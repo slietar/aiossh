@@ -9,10 +9,10 @@ from pathlib import Path
 import aiodrive
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from .client import BaseClient
+from .example_client import ExampleClient
 from .host_key import HostKey, RSAHostKey
 from .server import Server
-from .tcp import SockName, serve_tcp
+from .tcp import serve_tcp
 
 
 logging.basicConfig(
@@ -22,11 +22,6 @@ logging.basicConfig(
 
 logger = logging.getLogger('__main__')
 logger.debug(f'Process id: {os.getpid()}')
-
-
-class Client(BaseClient):
-  def __init__(self, name: SockName):
-    logger.debug(f'New connection from {name}')
 
 
 async def main():
@@ -67,7 +62,7 @@ async def main():
           async for incoming in tcp_server:
             group.create_task(
               server.handle(
-                Client(incoming.client_name),
+                ExampleClient(incoming.client_name),
                 incoming.reader,
                 incoming.writer,
               ),

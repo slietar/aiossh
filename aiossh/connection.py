@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Optional
 
 import aiodrive
 
+from .abstract.client import Client
 from .algorithms import AlgorithmSelection, AlgorithmSets
-from .client import BaseClient
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
 from .error import (
@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 @dataclass(repr=False, slots=True)
 class Connection:
   server: Server
-  client: BaseClient
+  client: Client
 
   reader: StreamReader
   writer: StreamWriter
@@ -89,6 +89,7 @@ class Connection:
   sequence_number_out: int = field(default=0, init=False)
   session_id: Optional[bytes] = None
 
+  authenticated: bool = False
   key_exchange_flow: Optional[MessageFlow] = None
   user_auth_flow: Optional[MessageFlow] = None
 
@@ -349,7 +350,7 @@ class Connection:
     self.user_auth_flow = MessageFlow()
 
     try:
-      await run_user_auth(self, self.user_auth_flow.read)
+      self.authenticated = await run_user_auth(self, self.user_auth_flow.read)
     finally:
       self.user_auth_flow = None
 

@@ -1,5 +1,6 @@
 import struct
 from abc import ABC
+from collections.abc import Collection
 from dataclasses import KW_ONLY, dataclass
 from typing import ClassVar, Literal, Optional
 
@@ -22,6 +23,9 @@ from .types import LanguageTag
 # See: RFC 4252
 
 type AuthenticationMethodName = Literal['password', 'publickey', 'hostbased', 'none']
+
+AUTHENTICATION_METHOD_NAMES: Collection[AuthenticationMethodName] = ['password', 'publickey', 'hostbased', 'none']
+
 
 @dataclass(slots=True)
 class UserAuthRequestMessage(DecodableMessage, ABC):
