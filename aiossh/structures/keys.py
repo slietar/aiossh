@@ -80,9 +80,3 @@ def decode_rsa_public_key(reader: ReadableBytesIO):
   n = decode_mpint(reader)
 
   return rsa.RSAPublicNumbers(e=e, n=n).public_key()
-
-def decode_rsa_signature(reader: ReadableBytesIO):
-  if decode_name(reader) != 'ssh-rsa':
-    raise ProtocolError
-
-  return decode_string(reader)

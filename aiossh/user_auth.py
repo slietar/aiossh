@@ -5,7 +5,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
-from cryptography.hazmat.primitives.hashes import SHA1
+from cryptography.hazmat.primitives.hashes import SHA1, SHA256, SHA512
 
 from .error import ProtocolError, UnreachableError
 from .flow import MessageFlowRead
@@ -24,9 +24,8 @@ from .structures.keys import (
   decode_ed25519_public_key,
   decode_ed25519_signature,
   decode_rsa_public_key,
-  decode_rsa_signature,
 )
-from .structures.primitives import encode_string
+from .structures.primitives import decode_name, decode_string, encode_string
 from .util import ReadableBytesIOImpl
 
 
@@ -63,13 +62,13 @@ async def run_user_auth(conn: Connection, read: MessageFlowRead) -> bool:
       return False
 
     case UserAuthRequestPublicKeyMessage():
-      # RSA requires "-o PubkeyAcceptedKeyTypes=ssh-rsa" in the OpenSSH client
+      # Using "ssh-rsa" requires "-o PubkeyAcceptedKeyTypes=ssh-rsa" in the OpenSSH client
 
       match request_message.algorithm:
         case 'ssh-ed25519':
           with ReadableBytesIOImpl(request_message.public_key) as reader:
             key = decode_ed25519_public_key(reader)
-        case 'ssh-rsa':
+        case 'ssh-rsa' | 'rsa-sha2-256' | 'rsa-sha2-512':
           with ReadableBytesIOImpl(request_message.public_key) as reader:
             key = decode_rsa_public_key(reader)
         case _:
@@ -94,18 +93,25 @@ async def run_user_auth(conn: Connection, read: MessageFlowRead) -> bool:
               conn.write_message(UserAuthFailureMessage(supported_methods=list(supported_methods)))
               return False
 
-          case 'ssh-rsa':
+          case 'ssh-rsa' | 'rsa-sha2-256' | 'rsa-sha2-512':
             assert isinstance(key, RSAPublicKey)
 
             with ReadableBytesIOImpl(request_message.signature) as reader:
-              signature = decode_rsa_signature(reader)
+              if decode_name(reader) != request_message.algorithm:
+                raise ProtocolError
+
+              signature = decode_string(reader)
 
             try:
               key.verify(
                 signature,
                 signed_data,
-                PKCS1v15(),
-                SHA1(),
+                padding=PKCS1v15(),
+                algorithm={
+                  'ssh-rsa': SHA1(),
+                  'rsa-sha2-256': SHA256(),
+                  'rsa-sha2-512': SHA512(),
+                }[request_message.algorithm],
               )
             except InvalidSignature:
               logger.debug('Invalid signature')

@@ -348,6 +348,8 @@ class Connection:
     self.write_message(ExtInfoMessage(extensions={
       'server-sig-algs': encode_name_list([
         'rsa-sha2-256',
+        'rsa-sha2-512',
+        # TODO: List all supported algorithms
       ]),
     }))
 

@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.serialization import ssh_key_fingerprint
 
 from .abstract.client import Client
+from .error import UnreachableError
 from .messages.user_auth import AuthenticationMethodName
 from .tcp import SockName
 
@@ -24,15 +25,31 @@ class ExampleClient(Client):
 
   @override
   async def auth_with_public_key(self, user_name, key, *, in_use) -> bool:
+    match key:
+      case Ed25519PublicKey():
+        key_type = 'ED25519'
+      case RSAPublicKey():
+        key_type = 'RSA'
+      case _:
+        raise UnreachableError
+
     authorized_fingerprints = {
-      # bytes.fromhex('c38c25d4546c4df46cec8735b16c31982e9272257b631e41764bfc1bd388eef8'),
-      b'',
+      bytes.fromhex(string.replace(':', '')) for string in {
+        # ED25519
+        'c3:8c:25:d4:54:6c:4d:f4:6c:ec:87:35:b1:6c:31:98:2e:92:72:25:7b:63:1e:41:76:4b:fc:1b:d3:88:ee:f8',
+
+        # RSA
+        '90:60:a3:72:6b:2f:bf:db:7f:16:54:d5:a1:f3:cb:da:a0:6b:bb:ba:79:5e:35:1c:ef:46:66:26:e5:c7:72:b9',
+      }
     }
 
     fingerprint = ssh_key_fingerprint(key, hash_algorithm=SHA256())
 
-    if fingerprint not in authorized_fingerprints:
-      logger.debug(f'Public key authentication failed for user "{user_name}" with public key fingerprint {fingerprint.hex(':')}')
-      return False
+    if fingerprint in authorized_fingerprints:
+      if in_use:
+        logger.debug(f'Authenticated user "{user_name}" with public {key_type} key fingerprint {fingerprint.hex(':')}')
 
-    return False
+      return True
+    else:
+      logger.debug(f'Public key authentication failed for user "{user_name}" with public {key_type} key fingerprint {fingerprint.hex(':')}')
+      return False
