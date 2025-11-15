@@ -36,6 +36,18 @@ class ChannelRequestDetailsPtyReq(Codable):
   term_modes: TerminalModes
 
 
+# Section 6.3
+
+@dataclass(kw_only=True, slots=True)
+class ChannelRequestDetailsX11Req(Codable):
+  key: ClassVar[str] = 'x11-req'
+
+  single_connection: bool
+  x11_authentication_protocol: bytes
+  x11_authentication_cookie: bytes
+  x11_screen_number: int
+
+
 # Section 6.5
 
 @dataclass(slots=True)
@@ -124,6 +136,7 @@ class ChannelRequestMessage(Codable, DecodableMessage):
   details: Annotated[
       ChannelRequestDetailsEnv
     | ChannelRequestDetailsPtyReq
+    | ChannelRequestDetailsX11Req
     | ChannelRequestDetailsShell
     | ChannelRequestDetailsExec
     | ChannelRequestDetailsSubsystem
