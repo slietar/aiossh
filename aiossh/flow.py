@@ -2,17 +2,15 @@ import asyncio
 from asyncio import Event, Future
 from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Optional, Protocol, TypeVar
+from typing import Optional, Protocol
 
 from .error import ProtocolError
 from .messages.base import DecodableMessage
 from .util import ReadableBytesIOImpl
 
 
-T_DecodableMessage = TypeVar('T_DecodableMessage', bound=DecodableMessage)
-
 class MessageFlowRead(Protocol):
-  def __call__(self, message_type: type[T_DecodableMessage], /) -> Awaitable[tuple[T_DecodableMessage, bytes]]:
+  def __call__[T: DecodableMessage](self, message_type: type[T], /) -> Awaitable[tuple[T, bytes]]:
     ...
 
 
@@ -31,7 +29,7 @@ class MessageFlow:
     self.event = Event()
     await self.event.wait()
 
-  async def read(self, message_type: type[T_DecodableMessage], /) -> tuple[T_DecodableMessage, bytes]:
+  async def read[T: DecodableMessage](self, message_type: type[T], /) -> tuple[T, bytes]:
     if self.future is not None:
       raise RuntimeError('Already reading')
 

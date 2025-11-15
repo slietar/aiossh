@@ -165,7 +165,7 @@ class Codable:
     return output
 
   @classmethod
-  def decode(cls, reader):
+  def decode(cls, reader: ReadableBytesIO):
     field_values = dict[str, Any]()
 
     for field_name, encoding in get_class_encodings(cls).items():

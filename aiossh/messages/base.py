@@ -45,3 +45,10 @@ class Message(CodableABC, DecodableMessage, EncodableMessage, ABC):
 
   def encode_payload(self):
     return bytes([self.id]) + self.encode()
+
+  @classmethod
+  def decode_payload(cls, payload: bytes) -> Self:
+    assert payload[0] == cls.id
+
+    with ReadableBytesIOImpl(payload[1:]) as reader:
+      return cls.decode(reader)

@@ -1,9 +1,18 @@
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import ClassVar
+from typing import ClassVar, override
 
 from ..encoding import Codable
-from .base import Message
+from ..error import ProtocolError
+from ..structures.primitives import (
+  decode_string,
+  decode_text,
+  decode_uint32,
+  encode_text,
+  encode_uint32,
+)
+from ..util import ReadableBytesIO
+from .base import DecodableMessage, EncodableMessage, Message
 from .types import LanguageTag
 
 
@@ -53,3 +62,33 @@ class UnimplementedMessage(Codable, Message):
 @dataclass(slots=True)
 class NewKeysMessage(Codable, Message):
   id: ClassVar[int] = 21
+
+
+@dataclass(kw_only=True, slots=True)
+class ExtInfoMessage(DecodableMessage, EncodableMessage):
+  id: ClassVar[int] = 7
+
+  extensions: dict[str, bytes]
+
+  @override
+  def encode(self):
+    return encode_uint32(len(self.extensions)) + b''.join(
+      encode_text(name) + value for name, value in self.extensions.items()
+    )
+
+  @classmethod
+  @override
+  def decode(cls, reader: ReadableBytesIO):
+    extension_count = decode_uint32(reader)
+    extensions = dict[str, bytes]()
+
+    for _ in range(extension_count):
+      name = decode_text(reader)
+      value = decode_string(reader)
+
+      if name in extensions:
+        raise ProtocolError
+
+      extensions[name] = value
+
+    return cls(extensions=extensions)

@@ -1,5 +1,6 @@
 import math
 import struct
+from collections.abc import Sequence
 from typing import Optional
 
 from ..error import ProtocolError
@@ -8,7 +9,7 @@ from ..util import ReadableBytesIO, ReadableBytesIOImpl
 
 # See: RFC 4251 Section 5
 
-def encode_name_list(names: list[str], /):
+def encode_name_list(names: Sequence[str], /):
   encoded = ','.join(names).encode('ascii')
   return struct.pack('>I', len(encoded)) + encoded
 

@@ -46,6 +46,7 @@ from .messages.channel_request import (
 from .messages.core import (
   DisconnectMessage,
   DisconnectReason,
+  ExtInfoMessage,
   NewKeysMessage,
   UnimplementedMessage,
 )
@@ -53,7 +54,7 @@ from .messages.kex_init import KexInitMessage
 from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
 from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
-from .structures.primitives import encode_mpint
+from .structures.primitives import encode_mpint, encode_name_list
 from .user_auth import run_user_auth
 from .util import ReadableBytesIOImpl
 
@@ -230,7 +231,7 @@ class Connection:
     supported_algorithms.server_host_key_algorithms &= functools.reduce(operator.or_, (key.algorithms() for key in self.server.host_keys))
 
     server_kex_init = KexInitMessage(
-      kex_algorithms=list(supported_algorithms.kex_algorithms),
+      kex_algorithms=['ext-info-s', *supported_algorithms.kex_algorithms],
       server_host_key_algorithms=list(supported_algorithms.server_host_key_algorithms),
       encryption_algorithms_client_to_server=list(supported_algorithms.encryption_algorithms_client_to_server),
       encryption_algorithms_server_to_client=list(supported_algorithms.encryption_algorithms_server_to_client),
@@ -341,6 +342,16 @@ class Connection:
     logger.debug('Done with key exchange')
 
 
+    # Send extensions
+
+    # TODO: Only send on first key exchange
+    self.write_message(ExtInfoMessage(extensions={
+      'server-sig-algs': encode_name_list([
+        'rsa-sha2-256',
+      ]),
+    }))
+
+
     # Finish flow
 
     self.key_exchange_flow = None
@@ -438,6 +449,10 @@ class Connection:
                   raise ProtocolError
 
                 await self.key_exchange_flow.feed(message_id, message_payload)
+
+              case ExtInfoMessage.id:
+                ext_info = ExtInfoMessage.decode_payload(message_payload)
+                logger.debug(f'Received extension info: {', '.join(ext_info.extensions.keys())}')
 
               case ServiceRequestMessage.id:
                 if self.key_exchange_flow is not None:

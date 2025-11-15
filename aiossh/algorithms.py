@@ -39,6 +39,8 @@ class AlgorithmSets:
     mac_algorithm_client_to_server = next((algorithm for algorithm in client_message.mac_algorithms_client_to_server if algorithm in self.mac_algorithms_client_to_server), None)
     mac_algorithm_server_to_client = next((algorithm for algorithm in client_message.mac_algorithms_server_to_client if algorithm in self.mac_algorithms_server_to_client), None)
 
+    assert kex_algorithm not in ('ext-info-c', 'ext-info-s')
+
     if kex_algorithm is None:
       raise AlgorithmNegotiationError('No common key exchange algorithm found')
     if server_host_key_algorithm is None:
