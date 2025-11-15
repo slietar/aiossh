@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional, override
 
 from .encoding import CodableABC
+from .error import ProtocolError
 from .structures.primitives import decode_uint32
 
 
@@ -40,6 +41,9 @@ class TerminalModes(CodableABC):
   ixany: Optional[int] = None
   ixoff: Optional[int] = None
   imaxbel: Optional[int] = None
+
+  # See: RFC 8160
+  iutf8: Optional[bool] = None
 
   isig: Optional[int] = None
   icanon: Optional[int] = None
@@ -150,6 +154,12 @@ class TerminalModes(CodableABC):
             modes.ixoff = value
           case 41:
             modes.imaxbel = value
+
+          case 42:
+            if value not in (0, 1):
+              raise ProtocolError
+
+            modes.iutf8 = bool(value)
 
           case 50:
             modes.isig = value
