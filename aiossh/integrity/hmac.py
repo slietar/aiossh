@@ -1,49 +1,71 @@
-from dataclasses import dataclass
+from typing import Literal, override
 
-from cryptography.hazmat.primitives import hashes, hmac
+from cryptography.hazmat.primitives.hashes import SHA1, SHA256, SHA512
+from cryptography.hazmat.primitives.hmac import HMAC
 
+from ..error import UnreachableError
+from ..structures.primitives import encode_uint32
 from .base import IntegrityVerification
 
 
-@dataclass(slots=True)
+# See: RFC 4253 Section 6.4
+
 class HMACSHA1IntegrityVerification(IntegrityVerification):
-  key: bytes
+  digest_size: int = 20
+  key_size: int = 20
 
-  def __init__(self, key: bytes):
-    self.key = key
+  @override
+  def build(self, key: bytes):
+    self._key = key
 
-  def produce(self, data: bytes, /):
-    hash = hmac.HMAC(self.key, hashes.SHA1())
-    hash.update(data)
-    return hash.finalize()
+  @override
+  def start(self, sequence_number: int):
+    self._hmac = HMAC(self._key, SHA1())
+    self._hmac.update(encode_uint32(sequence_number))
 
-  @staticmethod
-  def digest_size():
-    return 20
+  @override
+  def update(self, data: bytes):
+    self._hmac.update(data)
 
-  @staticmethod
-  def key_size():
-    return 20
+  @override
+  def digest(self):
+    digest = self._hmac
+    del self._hmac
+    return digest.finalize()
 
 
 # See: RFC 6668
 
-@dataclass(slots=True)
-class HMACSHA256IntegrityVerification(IntegrityVerification):
-  key: bytes
+class HMACSHA2IntegrityVerification(IntegrityVerification):
+  def __init__(self, digest_size: Literal[32, 64]):
+    super().__init__()
 
-  def __init__(self, key: bytes):
-    self.key = key
+    self.digest_size = digest_size
+    self.key_size = digest_size
 
-  def produce(self, data: bytes, /):
-    hash = hmac.HMAC(self.key, hashes.SHA256())
-    hash.update(data)
-    return hash.finalize()
+  @override
+  def build(self, key: bytes):
+    self._key = key
 
-  @staticmethod
-  def digest_size():
-    return 32
+  @override
+  def start(self, sequence_number: int):
+    match self.digest_size:
+      case 32:
+        hash = SHA256()
+      case 64:
+        hash = SHA512()
+      case _:
+        raise UnreachableError
 
-  @staticmethod
-  def key_size():
-    return 32
+    self._hmac = HMAC(self._key, hash)
+    self._hmac.update(encode_uint32(sequence_number))
+
+  @override
+  def update(self, data: bytes):
+    self._hmac.update(data)
+
+  @override
+  def digest(self):
+    digest = self._hmac.finalize()
+    del self._hmac
+    return digest

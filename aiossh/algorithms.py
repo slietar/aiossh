@@ -6,10 +6,38 @@ from .error import AlgorithmNegotiationError
 from .messages.kex_init import KexInitMessage
 
 
-type KexAlgorithmName = Literal['diffie-hellman-group-exchange-sha256']
-type HostKeyAlgorithmName = Literal['ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'rsa-sha2-256', 'rsa-sha2-512']
-type EncryptionAlgorithmName = Literal['aes128-ctr', 'aes192-ctr', 'aes256-ctr']
-type MacAlgorithmName = Literal['hmac-sha1', 'hmac-sha2-256']
+type KexAlgorithmName = Literal[
+  'diffie-hellman-group-exchange-sha256',
+]
+
+type HostKeyAlgorithmName = Literal[
+  'ecdsa-sha2-nistp256',
+  'ecdsa-sha2-nistp384',
+  'ecdsa-sha2-nistp521',
+  'rsa-sha2-256',
+  'rsa-sha2-512',
+  'ssh-ed25519',
+  'ssh-rsa',
+]
+
+type EncryptionAlgorithmName = Literal[
+  'aes128-ctr',
+  'aes192-ctr',
+  'aes256-ctr',
+]
+
+type MacAlgorithmName = Literal[
+  'hmac-sha1',
+  'hmac-sha2-256',
+  'hmac-sha2-512',
+  'umac-32',
+  'umac-64',
+  'umac-64@openssh.com',
+  'umac-96',
+  'umac-128',
+  'umac-128@openssh.com',
+]
+
 type CompressionAlgorithmName = Literal['none']
 
 

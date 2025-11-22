@@ -2,16 +2,17 @@ from typing import Protocol
 
 
 class IntegrityVerification(Protocol):
-  def __init__(self, key: bytes):
+  digest_size: int
+  key_size: int
+
+  def build(self, key: bytes) -> None:
     ...
 
-  def produce(self, data: bytes, /) -> bytes:
+  def start(self, sequence_number: int) -> None:
     ...
 
-  @staticmethod
-  def digest_size() -> int:
+  def update(self, data: bytes) -> None:
     ...
 
-  @staticmethod
-  def key_size() -> int:
+  def digest(self) -> bytes:
     ...

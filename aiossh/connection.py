@@ -25,7 +25,9 @@ from .flow import MessageFlow
 from .host_key import HostKey
 from .ident_string import IdentString
 from .integrity.base import IntegrityVerification
-from .integrity.resolve import resolve_integrity_verification
+from .integrity.resolve import (
+  resolve_integrity_verification,
+)
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import EncodableMessage
 from .messages.channel import (
@@ -116,7 +118,7 @@ class Connection:
 
   async def read_message(self):
     block_size_or_zero = self.encryption_in.block_size() if self.encryption_in is not None else 0
-    digest_size_or_zero = self.integrity_verification_in.digest_size() if self.integrity_verification_in is not None else 0
+    digest_size_or_zero = self.integrity_verification_in.digest_size if self.integrity_verification_in is not None else 0
 
 
     # Read packet length (without the length itself) or first block
@@ -179,10 +181,11 @@ class Connection:
     sequence_number = self.sequence_number_in
 
     if self.integrity_verification_in is not None:
-      expected_digest = await self.read(self.integrity_verification_in.digest_size())
-      produced_digest = self.integrity_verification_in.produce(
-        struct.pack('>I', sequence_number) + packet_with_length,
-      )
+      expected_digest = await self.read(self.integrity_verification_in.digest_size)
+
+      self.integrity_verification_in.start(sequence_number)
+      self.integrity_verification_in.update(packet_with_length)
+      produced_digest = self.integrity_verification_in.digest()
 
       if expected_digest != produced_digest:
         raise IntegrityVerificationError
@@ -207,7 +210,9 @@ class Connection:
       self.writer.write(sized_packet)
 
     if self.integrity_verification_out is not None:
-      self.writer.write(self.integrity_verification_out.produce(struct.pack('>I', self.sequence_number_out) + sized_packet))
+      self.integrity_verification_out.start(self.sequence_number_out)
+      self.integrity_verification_out.update(sized_packet)
+      self.writer.write(self.integrity_verification_out.digest())
 
     self.sequence_number_out += 1
 
@@ -315,10 +320,9 @@ class Connection:
       iv=derive_key(b'B', EncryptionOut.block_size()),
     )
 
-    IntegrityVerificationOut = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_server_to_client)
-
-    self.integrity_verification_out = IntegrityVerificationOut(
-      key=derive_key(b'F', IntegrityVerificationOut.key_size()),
+    self.integrity_verification_out = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_server_to_client)
+    self.integrity_verification_out.build(
+      derive_key(b'F', self.integrity_verification_out.key_size),
     )
 
 
@@ -333,10 +337,9 @@ class Connection:
       iv=derive_key(b'A', EncryptionIn.block_size()),
     )
 
-    IntegrityVerificationIn = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_client_to_server)
-
-    self.integrity_verification_in = IntegrityVerificationIn(
-      key=derive_key(b'E', IntegrityVerificationIn.key_size()),
+    self.integrity_verification_in = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_client_to_server)
+    self.integrity_verification_in.build(
+      derive_key(b'E', self.integrity_verification_in.key_size),
     )
 
     logger.debug('Done with key exchange')

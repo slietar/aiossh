@@ -87,6 +87,10 @@ def decode_uint32(reader: ReadableBytesIO) -> int:
   return struct.unpack('>I', reader.read(4))[0]
 
 
+def encode_uint64(value: int, /):
+  return struct.pack('>Q', value)
+
+
 if __name__ == '__main__':
   for x in [0, 0x9a378f9b2e332a7, 0x80, -0x1234, -0xdeadbeef]:
     encoded = encode_mpint(x)
