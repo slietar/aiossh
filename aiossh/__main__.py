@@ -53,7 +53,7 @@ async def main():
   server = Server(host_keys=host_keys)
 
   try:
-    with aiodrive.handle_signal(signal.SIGINT, signal.SIGTERM):
+    with aiodrive.handle_signal([signal.SIGINT, signal.SIGTERM]):
       async with serve_tcp(['127.0.0.1', '::1'], 1302) as tcp_server:
         for name in tcp_server.names:
           logger.info(f'Listening on {name}')

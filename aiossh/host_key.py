@@ -18,6 +18,7 @@ from .structures.primitives import encode_name, encode_string
 
 
 class HostKey[T](ABC):
+  @abstractmethod
   def algorithms(self) -> frozenset[T]:
     ...
 

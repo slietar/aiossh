@@ -9,13 +9,13 @@ from .base import IntegrityVerification
 # See: draft-miller-secsh-umac-01
 
 class UMACIntegrityVerification(IntegrityVerification):
-  digest_size: int
+  digest_size: Literal[4, 8, 12, 16]
   key_size: int
 
   def __init__(self, digest_size: Literal[4, 8, 12, 16]):
     super().__init__()
 
-    self.digest_size = digest_size
+    self.digest_size = digest_size # type: ignore
     self.key_size = 16
 
   @override
