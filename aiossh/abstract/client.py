@@ -1,11 +1,13 @@
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable
 from typing import Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 from ..messages.user_auth import AuthenticationMethodName
-from .session import Session, SessionResult
+from ..session import Session
+from .session import SessionResult
 
 
 class Client(ABC):
@@ -29,11 +31,11 @@ class Client(ABC):
   #   ...
 
 
-  async def start_exec(self, session: Session, command: str) -> Optional[SessionResult]:
+  def start_exec(self, session: Session, command: str) -> Awaitable[Optional[SessionResult]]:
     raise NotImplementedError
 
-  # async def start_shell(self, session: Session) -> Optional[SessionResult]:
-  #   raise NotImplementedError
+  def start_shell(self, session: Session) -> Awaitable[Optional[SessionResult]]:
+    raise NotImplementedError
 
   # async def start_subsystem(self, session: Session, name: str) -> None:
   #   raise NotImplementedError

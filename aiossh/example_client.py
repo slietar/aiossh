@@ -1,4 +1,7 @@
+from asyncio import TaskGroup
 import logging
+import os
+from pathlib import Path
 from typing import override
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -7,8 +10,10 @@ from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.serialization import ssh_key_fingerprint
 
 from .abstract.client import Client
+from .abstract.session import SessionExitStatus
 from .error import UnreachableError
 from .messages.user_auth import AuthenticationMethodName
+from .pty import PTYSession, iter_reader
 from .tcp import SockName
 
 
@@ -53,3 +58,43 @@ class ExampleClient(Client):
     else:
       logger.debug(f'Public key authentication failed for user "{user_name}" with public {key_type} key fingerprint {fingerprint.hex(':')}')
       return False
+
+  @override
+  async def start_shell(self, session):
+    assert session.settings.pty is not None
+    assert session.activity is not None
+
+    activity = session.activity
+
+    # return SessionExitStatus(3)
+
+    async def pipe_stdin_to_pty(pty_session: PTYSession):
+      async for chunk in iter_reader(activity.stdin):
+        pty_session.write(chunk)
+
+    async def pipe_pty_to_stdout(pty_session: PTYSession):
+      async for chunk in iter_reader(pty_session.reader):
+        await activity.stdout.write(chunk)
+
+    # async def watch_terminal_size(session: PTYSession):
+    #   while True:
+    #     await aiodrive.wait_for_signal(signal.SIGWINCH)
+    #     session.resize(os.get_terminal_size())
+
+
+    # pty_session = None
+
+    async with PTYSession.create(
+      os.environ['SHELL'],
+      cwd=Path.home(),
+      env=session.settings.env,
+      terminal_size=os.terminal_size(session.settings.pty.window_chars),
+    ) as pty_session:
+      async with TaskGroup() as group:
+        group.create_task(pipe_pty_to_stdout(pty_session))
+        group.create_task(pipe_stdin_to_pty(pty_session))
+        # group.create_task(watch_terminal_size(session))
+
+
+    # if pty_session is not None:
+    #   return SessionExitStatus(pty_session.process.returncode)

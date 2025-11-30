@@ -38,6 +38,8 @@ class CodableABC(ABC):
     ...
 
 
+# Encodings
+
 @dataclass(slots=True)
 class CodableEncoding:
   codable: CodableABC
@@ -54,6 +56,8 @@ class UnionEncoding:
 
 type Encoding = Literal['boolean', 'mpint', 'name', 'name-list', 'string', 'text', 'uint32'] | CodableEncoding | FixedSizeBytesEncoding | UnionEncoding
 
+
+# Encoding annotations
 
 @dataclass(slots=True)
 class EncodingAnnotation:

@@ -3,7 +3,7 @@ from typing import Annotated, ClassVar, Literal
 
 from ..encoding import Codable, Name, UnionAnnotation
 from ..terminal_modes import TerminalModes
-from .base import DecodableMessage, EncodableMessage
+from .base import EncodableMessage, Message
 from .types import LanguageTag
 
 
@@ -58,7 +58,7 @@ class ChannelRequestDetailsShell(Codable):
 class ChannelRequestDetailsExec(Codable):
   key: ClassVar[str] = 'exec'
 
-  command: bytes
+  command: str
 
 @dataclass(slots=True)
 class ChannelRequestDetailsSubsystem(Codable):
@@ -126,7 +126,7 @@ class ChannelRequestDetailsExitSignal(Codable):
 # Section 4
 
 @dataclass(kw_only=True, slots=True)
-class ChannelRequestMessage(Codable, DecodableMessage):
+class ChannelRequestMessage(Codable, Message):
   id: ClassVar[int] = 98
 
   recipient_channel_id: int

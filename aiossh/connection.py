@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Optional
 import aiodrive
 
 from .abstract.client import Client
+from .abstract.session import SessionExitSignal, SessionExitStatus
 from .algorithms import AlgorithmSelection, AlgorithmSets
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
@@ -20,6 +21,7 @@ from .error import (
   IntegrityVerificationError,
   ProtocolError,
   ProtocolVersionNotSupportedError,
+  UnreachableError,
 )
 from .flow import MessageFlow
 from .host_key import HostKey
@@ -31,7 +33,9 @@ from .integrity.resolve import (
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import EncodableMessage
 from .messages.channel import (
+  ChannelCloseMessage,
   ChannelDataMessage,
+  ChannelEofMessage,
   ChannelOpenConfirmationMessage,
   ChannelOpenDetailsSession,
   ChannelOpenFailureMessage,
@@ -41,6 +45,8 @@ from .messages.channel import (
 from .messages.channel_request import (
   ChannelFailureMessage,
   ChannelRequestDetailsEnv,
+  ChannelRequestDetailsExitSignal,
+  ChannelRequestDetailsExitStatus,
   ChannelRequestDetailsPtyReq,
   ChannelRequestDetailsShell,
   ChannelRequestMessage,
@@ -57,8 +63,9 @@ from .messages.kex_init import KexInitMessage
 from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
 from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
+from .session import Session, SessionActivity, SessionPTY
+from .stream import AsyncWritableStreamImpl
 from .structures.primitives import encode_mpint, encode_name_list
-from .terminal_modes import TerminalModes
 from .user_auth import run_user_auth
 from .util import ReadableBytesIOImpl
 
@@ -70,10 +77,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
-class DraftSession:
-  env: dict[str, str] = field(default_factory=dict)
-  pty: Optional[TerminalModes] = None
+
+# @dataclass(slots=True)
+# class DraftSessionPTY:
+#   term_name: bytes
+#   term_width_chars: int
+#   term_height_chars: int
+#   term_width_pixels: int
+#   term_height_pixels: int
+#   term_modes: TerminalModes
+
+# @dataclass(slots=True)
+# class DraftSession:
+#   env: dict[str, str] = field(default_factory=dict)
+#   pty: Optional[DraftSessionPTY] = None
 
 
 @dataclass(repr=False, slots=True)
@@ -105,7 +122,7 @@ class Connection:
   user_auth_flow: Optional[MessageFlow] = None
 
   next_session_id: int = field(default=8345, init=False)
-  sessions: dict[int, DraftSession] = field(default_factory=dict, init=False)
+  sessions: dict[int, Session] = field(default_factory=dict, init=False)
 
 
   async def read(self, byte_count: int, /):
@@ -508,7 +525,7 @@ class Connection:
                     session_id = self.next_session_id
                     self.next_session_id += 1
 
-                    self.sessions[session_id] = DraftSession()
+                    self.sessions[session_id] = Session(client_channel_id=message.sender_channel_id)
 
                     self.write_message(
                       ChannelOpenConfirmationMessage(
@@ -516,7 +533,7 @@ class Connection:
                         sender_channel_id=session_id,
                         window_size=message.window_size,
                         max_packet_size=message.max_packet_size,
-                        details=message.details,
+                        # details=message.details,
                       ),
                     )
 
@@ -537,14 +554,15 @@ class Connection:
                 if session is None:
                   raise ProtocolError
 
+                client_channel_id = session.client_channel_id
+
                 match message.details:
                   case ChannelRequestDetailsEnv(name=name, value=value):
-                    logger.debug(f'Setting environment variable {name}={value}')
-
                     success = self.client.set_session_env(name, value)
 
                     if success:
-                      session.env[name] = value
+                      logger.debug(f'Setting environment variable {name}={value}')
+                      session.settings.env[name] = value
 
                       if message.want_reply:
                         self.write_message(ChannelSuccessMessage(
@@ -552,12 +570,94 @@ class Connection:
                         ))
 
                   case ChannelRequestDetailsPtyReq():
-                    logger.debug('Requesting PTY')
-                    __import__('pprint').pprint(message.details.term_modes)
-                    success = True
+                    logger.debug('Allocating PTY')
+                    success = session.settings.pty is None
+
+                    if success:
+                      session.settings.pty = SessionPTY(
+                        terminal_modes=message.details.term_modes,
+                        terminal_name=message.details.term_name,
+                        window_chars=(message.details.term_width_chars, message.details.term_height_chars),
+                        window_pixels=(message.details.term_width_pixels, message.details.term_height_pixels),
+                      )
+
                   case ChannelRequestDetailsShell():
                     logger.debug('Starting shell')
-                    success = True
+
+                    try:
+                      coro = self.client.start_shell(session)
+                    except NotImplementedError:
+                      logger.debug('Shell not implemented by client')
+                      success = False
+                    else:
+                      async def write_stdout(chunk: Optional[bytes], /):
+                        if chunk is not None:
+                          # TODO: Split chunk
+
+                          self.write_message(
+                            ChannelDataMessage(
+                              recipient_channel_id=client_channel_id,
+                              data=chunk,
+                            ),
+                          )
+                        else:
+                          self.write_message(
+                            ChannelEofMessage(
+                              recipient_channel_id=client_channel_id,
+                            ),
+                          )
+
+                      session.activity = SessionActivity(
+                        stdout=AsyncWritableStreamImpl(write_stdout),
+                        stderr=AsyncWritableStreamImpl(write_stdout),
+                      )
+
+                      success = True
+
+                      async def session_handler():
+                        result = await coro
+
+                        match result:
+                          case SessionExitStatus(status):
+                            self.write_message(
+                              ChannelRequestMessage(
+                                recipient_channel_id=client_channel_id,
+                                request_type='exit-status', # TODO: Remove this
+                                want_reply=False,
+                                details=ChannelRequestDetailsExitStatus(exit_status=status),
+                              ),
+                            )
+                          case SessionExitSignal():
+                            self.write_message(
+                              ChannelRequestMessage(
+                                recipient_channel_id=client_channel_id,
+                                request_type='exit-signal', # TODO: Remove this
+                                want_reply=False,
+                                details=ChannelRequestDetailsExitSignal(
+                                  signal_name=result.signal_name,
+                                  core_dumped=result.core_dumped,
+                                  error_message=result.error_message,
+                                  language_tag=result.language_tag,
+                                ),
+                              ),
+                            )
+                          case _:
+                            raise UnreachableError
+
+                        self.write_message(
+                          ChannelCloseMessage(
+                            recipient_channel_id=client_channel_id,
+                          ),
+                        )
+
+                      group.create_task(session_handler())
+
+                  # case ChannelRequestDetailsExec(command):
+                  #   logger.debug(f'Executing command: "{command}"')
+                  #   success = True
+
+                  #   session.activity = SessionActivity()
+
                   case _:
                     print('Unsupported channel request details')
                     pprint(message)
@@ -567,21 +667,33 @@ class Connection:
                 if message.want_reply:
                   if success:
                     self.write_message(ChannelSuccessMessage(
-                      recipient_channel_id=message.recipient_channel_id,
+                      recipient_channel_id=client_channel_id,
                     ))
                   else:
                     self.write_message(ChannelFailureMessage(
-                      recipient_channel_id=message.recipient_channel_id,
+                      recipient_channel_id=client_channel_id,
                     ))
+
+              case ChannelCloseMessage.id:
+                message = ChannelCloseMessage.decode_payload(message_payload)
+                session = self.sessions.pop(message.recipient_channel_id, None) # TODO: Improve
+
+                if session is None:
+                  raise ProtocolError
 
               case ChannelDataMessage.id:
                 message = ChannelDataMessage.decode_payload(message_payload)
-                __import__('pprint').pprint(message)
+                session = self.sessions.get(message.recipient_channel_id)
 
-                self.write_message(ChannelDataMessage(
-                  recipient_channel_id=message.recipient_channel_id,
-                  data=message.data.replace(b'\r', b'\n'),
-                ))
+                if (session is None) or (session.activity is None):
+                  raise ProtocolError
+
+                await session.activity.stdout.write(message.data)
+
+                # self.write_message(ChannelDataMessage(
+                #   recipient_channel_id=message.recipient_channel_id,
+                #   data=message.data.replace(b'\r', b'\n'),
+                # ))
 
               case _:
                 self.write_message(UnimplementedMessage(message_sequence_number))

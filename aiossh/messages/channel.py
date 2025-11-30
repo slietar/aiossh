@@ -86,7 +86,7 @@ class ChannelOpenConfirmationMessage(Codable, Message):
   window_size: int
   max_packet_size: int
 
-  details: ChannelOpenDetails
+  # details: ChannelOpenDetails
 
 
 class ChannelOpenFailureReason(IntEnum):
@@ -131,5 +131,16 @@ class ChannelExtendedDataMessage(Codable, Message):
 @dataclass(kw_only=True, slots=True)
 class ChannelEofMessage(Codable, Message):
   id: ClassVar[int] = 96
+
+  recipient_channel_id: int
+
+
+## Close channel message
+
+# Section 5.3
+
+@dataclass(kw_only=True, slots=True)
+class ChannelCloseMessage(Codable, Message):
+  id: ClassVar[int] = 97
 
   recipient_channel_id: int
