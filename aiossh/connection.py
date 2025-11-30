@@ -33,12 +33,13 @@ from .messages.base import EncodableMessage
 from .messages.channel import (
   ChannelDataMessage,
   ChannelOpenConfirmationMessage,
+  ChannelOpenDetailsSession,
   ChannelOpenFailureMessage,
   ChannelOpenFailureReason,
   ChannelOpenMessage,
-  ChannelOpenUnknownMessage,
 )
 from .messages.channel_request import (
+  ChannelFailureMessage,
   ChannelRequestDetailsEnv,
   ChannelRequestDetailsPtyReq,
   ChannelRequestDetailsShell,
@@ -57,6 +58,7 @@ from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
 from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
 from .structures.primitives import encode_mpint, encode_name_list
+from .terminal_modes import TerminalModes
 from .user_auth import run_user_auth
 from .util import ReadableBytesIOImpl
 
@@ -66,6 +68,12 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class DraftSession:
+  env: dict[str, str] = field(default_factory=dict)
+  pty: Optional[TerminalModes] = None
 
 
 @dataclass(repr=False, slots=True)
@@ -95,6 +103,9 @@ class Connection:
   authenticated: bool = False
   key_exchange_flow: Optional[MessageFlow] = None
   user_auth_flow: Optional[MessageFlow] = None
+
+  next_session_id: int = field(default=8345, init=False)
+  sessions: dict[int, DraftSession] = field(default_factory=dict, init=False)
 
 
   async def read(self, byte_count: int, /):
@@ -488,45 +499,80 @@ class Connection:
                 await self.user_auth_flow.feed(message_id, message_payload) # type: ignore
 
               case ChannelOpenMessage.id:
-                msg = ChannelOpenMessage.decode_payload(message_payload)
+                message = ChannelOpenMessage.decode_payload(message_payload)
 
-                if isinstance(msg, ChannelOpenUnknownMessage):
-                  self.write_message(ChannelOpenFailureMessage(
-                    recipient_channel_id=msg.sender_channel_id,
-                    reason_code=ChannelOpenFailureReason.UnknownChannelType,
-                    description='Unknown channel type',
-                    language_tag='',
-                  ))
-                else:
-                  logger.debug(f'Opening channel of type {type(msg).__name__}')
+                match message.details:
+                  case ChannelOpenDetailsSession():
+                    logger.debug(f'Opening channel of type {type(message.details).__name__}')
 
-                  self.write_message(ChannelOpenConfirmationMessage(ChannelOpenMessage(
-                    max_packet_size=msg.max_packet_size,
-                    sender_channel_id=0,
-                    window_size=msg.window_size,
-                  ), recipient_channel_id=msg.sender_channel_id))
+                    session_id = self.next_session_id
+                    self.next_session_id += 1
+
+                    self.sessions[session_id] = DraftSession()
+
+                    self.write_message(
+                      ChannelOpenConfirmationMessage(
+                        recipient_channel_id=message.sender_channel_id,
+                        sender_channel_id=session_id,
+                        window_size=message.window_size,
+                        max_packet_size=message.max_packet_size,
+                        details=message.details,
+                      ),
+                    )
+
+                  case _:
+                    self.write_message(
+                      ChannelOpenFailureMessage(
+                        recipient_channel_id=message.sender_channel_id,
+                        reason_code=ChannelOpenFailureReason.UnknownChannelType,
+                        description='Unknown channel type',
+                        language_tag='',
+                      ),
+                    )
 
               case ChannelRequestMessage.id:
-                msg = ChannelRequestMessage.decode_payload(message_payload)
+                message = ChannelRequestMessage.decode_payload(message_payload)
+                session = self.sessions.get(message.recipient_channel_id)
 
-                match msg.details:
-                  case ChannelRequestDetailsEnv():
-                    logger.debug(f'Setting environment variable {msg.details.name.decode('ascii')}={msg.details.value.decode('ascii')}')
+                if session is None:
+                  raise ProtocolError
+
+                match message.details:
+                  case ChannelRequestDetailsEnv(name=name, value=value):
+                    logger.debug(f'Setting environment variable {name}={value}')
+
+                    success = self.client.set_session_env(name, value)
+
+                    if success:
+                      session.env[name] = value
+
+                      if message.want_reply:
+                        self.write_message(ChannelSuccessMessage(
+                          recipient_channel_id=message.recipient_channel_id,
+                        ))
+
                   case ChannelRequestDetailsPtyReq():
                     logger.debug('Requesting PTY')
-                    __import__('pprint').pprint(msg.details.term_modes)
+                    __import__('pprint').pprint(message.details.term_modes)
+                    success = True
                   case ChannelRequestDetailsShell():
                     logger.debug('Starting shell')
+                    success = True
                   case _:
                     print('Unsupported channel request details')
-                    pprint(msg)
+                    pprint(message)
 
                     raise ProtocolError
 
-                if msg.want_reply:
-                  self.write_message(ChannelSuccessMessage(
-                    recipient_channel_id=msg.recipient_channel_id,
-                  ))
+                if message.want_reply:
+                  if success:
+                    self.write_message(ChannelSuccessMessage(
+                      recipient_channel_id=message.recipient_channel_id,
+                    ))
+                  else:
+                    self.write_message(ChannelFailureMessage(
+                      recipient_channel_id=message.recipient_channel_id,
+                    ))
 
               case ChannelDataMessage.id:
                 message = ChannelDataMessage.decode_payload(message_payload)

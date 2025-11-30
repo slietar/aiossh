@@ -4,9 +4,10 @@ import inspect
 import typing
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from types import NoneType, UnionType
+from types import NoneType
 from typing import Annotated, Any, ClassVar, Literal, Self, get_type_hints
 
+from .error import ProtocolError
 from .structures.primitives import (
   decode_boolean,
   decode_mpint,
@@ -47,6 +48,7 @@ class FixedSizeBytesEncoding:
 
 @dataclass(slots=True)
 class UnionEncoding:
+  allow_none: bool
   discriminant: str
   variants: dict[Any, type[Codable]]
 
@@ -71,16 +73,19 @@ type Name = Annotated[str, EncodingAnnotation('name')]
 type NameList = Annotated[list[str], EncodingAnnotation('name-list')]
 
 
+def resolve_type(type_value: Any, /):
+  if isinstance(type_value, typing.TypeAliasType):
+    return type_value.__value__
+
+  return type_value
+
 def get_class_encodings(cls):
   encodings = dict[str, Encoding]()
   field_types = get_type_hints(cls, include_extras=True)
 
   for field in dataclasses.fields(cls):
     field_type = field_types[field.name]
-    current_type = field_type
-
-    if isinstance(current_type, typing.TypeAliasType):
-      current_type = current_type.__value__
+    current_type = resolve_type(field_type)
 
     if typing.get_origin(current_type) is Annotated:
       found = False
@@ -93,10 +98,14 @@ def get_class_encodings(cls):
           case FixedSizeBytesAnnotation(size):
             encodings[field.name] = FixedSizeBytesEncoding(size)
 
-          case UnionAnnotation(discriminant, variant_attr) if typing.get_origin(current_type.__origin__) is UnionType:
-            encodings[field.name] = UnionEncoding(discriminant, {
-              getattr(variant, variant_attr): variant for variant in typing.get_args(current_type.__origin__) if variant is not NoneType
-            })
+          case UnionAnnotation(discriminant, variant_attr):
+            args = typing.get_args(resolve_type(current_type.__origin__))
+
+            encodings[field.name] = UnionEncoding(
+              allow_none=any(arg is NoneType for arg in args),
+              discriminant=discriminant,
+              variants=({ getattr(arg, variant_attr): arg for arg in args if arg is not NoneType }),
+            )
 
           case _:
             continue
@@ -154,7 +163,7 @@ class Codable:
         case FixedSizeBytesEncoding(size):
           assert len(value) == size
           output += value
-        case UnionEncoding(discriminant, variants):
+        case UnionEncoding(discriminant=discriminant, variants=variants):
           if not isinstance(value, expected_variant_type := variants[getattr(self, discriminant)]):
             raise TypeError(f'Expected {expected_variant_type!r}, got {type(value)!r}')
 
@@ -189,14 +198,16 @@ class Codable:
             field_values[field_name] = codable.decode(codable_reader)
         case FixedSizeBytesEncoding(size):
           field_values[field_name] = reader.read(size)
-        case UnionEncoding(discriminant, variants):
+        case UnionEncoding(allow_none, discriminant, variants):
           variant = variants.get(field_values[discriminant])
 
           if variant is not None:
             field_values[field_name] = variant.decode(reader)
-          else:
+          elif allow_none:
             field_values[field_name] = None
             reader.read_all()
+          else:
+            raise ProtocolError
         case _:
           raise TypeError(f'Unsupported encoding: {encoding!r}')
 

@@ -18,8 +18,8 @@ from .types import LanguageTag
 class ChannelRequestDetailsEnv(Codable):
   key: ClassVar[str] = 'env'
 
-  name: bytes
-  value: bytes
+  name: str
+  value: str
 
 
 # Section 6.2

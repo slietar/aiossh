@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable
 from typing import Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -20,18 +19,18 @@ class Client(ABC):
     raise NotImplementedError
 
 
-  # # Session management
+  # Session management
 
-  # def set_session_env(self) -> bool:
-  #   return True
+  def set_session_env(self, key: str, value: str) -> bool:
+    return True
 
   # # def start_forwarding(self, handle) -> bool:
   # async def open_tcpip_forward_channel(self, cancelled: Awaitable[None]) -> bool:
   #   ...
 
 
-  # async def start_exec(self, session: Session, command: str) -> Optional[SessionResult]:
-  #   raise NotImplementedError
+  async def start_exec(self, session: Session, command: str) -> Optional[SessionResult]:
+    raise NotImplementedError
 
   # async def start_shell(self, session: Session) -> Optional[SessionResult]:
   #   raise NotImplementedError
