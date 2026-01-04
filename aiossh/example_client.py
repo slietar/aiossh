@@ -1,6 +1,6 @@
-from asyncio import TaskGroup
 import logging
 import os
+from asyncio import TaskGroup
 from pathlib import Path
 from typing import override
 
@@ -14,16 +14,12 @@ from .abstract.session import SessionExitStatus
 from .error import UnreachableError
 from .messages.user_auth import AuthenticationMethodName
 from .pty import PTYSession, iter_reader
-from .tcp import SockName
 
 
 logger = logging.getLogger(__name__)
 
 
 class ExampleClient(Client):
-  def __init__(self, socket_name: SockName):
-    logger.debug(f'New connection from {socket_name}')
-
   @override
   async def get_auth_methods(self, user_name) -> set[AuthenticationMethodName]:
     return {'publickey'}

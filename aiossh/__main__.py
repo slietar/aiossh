@@ -3,7 +3,6 @@ import logging
 import os
 import pickle
 import signal
-from asyncio import TaskGroup
 from pathlib import Path
 
 import aiodrive
@@ -12,7 +11,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from .example_client import ExampleClient
 from .host_key import HostKey, RSAHostKey
 from .server import Server
-from .tcp import serve_tcp
 
 
 logging.basicConfig(
@@ -50,24 +48,28 @@ async def main():
 
   # Start server
 
-  server = Server(host_keys=host_keys)
+  ssh_server = Server(host_keys=host_keys)
+
+  async def tcp_handler(tcp_connection: aiodrive.Connection):
+    logger.debug(f'Incoming connection from {tcp_connection.client_name} to {tcp_connection.server_name}')
+
+    await ssh_server.handle(
+      ExampleClient(),
+      tcp_connection.reader,
+      tcp_connection.writer,
+    )
 
   try:
     with aiodrive.handle_signal([signal.SIGINT, signal.SIGTERM]):
-      async with serve_tcp(['127.0.0.1', '::1'], 1302) as tcp_server:
-        for name in tcp_server.names:
-          logger.info(f'Listening on {name}')
+      async with aiodrive.TCPServer.listen(
+        tcp_handler,
+        host=['127.0.0.1', '::1'],
+        port=1302,
+      ) as tcp_server:
+        for binding in tcp_server.bindings:
+          logger.info(f'Listening on {binding}')
 
-        async with TaskGroup() as group:
-          async for incoming in tcp_server:
-            group.create_task(
-              server.handle(
-                ExampleClient(incoming.client_name),
-                incoming.reader,
-                incoming.writer,
-              ),
-              name=f'handle-{incoming.client_name}',
-            )
+        await aiodrive.wait_forever()
   except aiodrive.SignalHandledException as e:
     print('\r', end='')
     logger.info(f'Received {signal.Signals(e.signal).name}')
