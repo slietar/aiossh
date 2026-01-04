@@ -1,7 +1,9 @@
-from asyncio import Event, Lock
+from asyncio import Lock
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Optional, Protocol, override
+
+import aiodrive
 
 
 class AsyncReadableStreamProtocol(Protocol):
@@ -17,16 +19,16 @@ class AsyncReadableStreamProtocol(Protocol):
 class AsyncReadableStreamImpl(AsyncReadableStreamProtocol):
   _closed: bool = field(default=False, init=False)
   _buffer: bytes = field(default=b'', init=False)
-  _event: Event = field(default_factory=Event, init=False)
+  _button: aiodrive.Button = field(default_factory=aiodrive.Button, init=False)
   _reading: bool = field(default=False, init=False)
 
   def _close(self):
     self._closed = True
-    self._event.set()
+    self._button.press()
 
   def _feed(self, chunk: bytes, /):
     self._buffer += chunk
-    self._event.set()
+    self._button.press()
 
   @override
   async def read(self, byte_count = -1, /):
@@ -36,13 +38,13 @@ class AsyncReadableStreamImpl(AsyncReadableStreamProtocol):
     try:
       if byte_count < 0:
         while not self._closed:
-          await self._event.wait()
+          await self._button
 
         data = self._buffer
         self._buffer = b''
       else:
         if not self._buffer:
-          await self._event.wait()
+          await self._button
 
         data = self._buffer[:byte_count]
         self._buffer = self._buffer[byte_count:]

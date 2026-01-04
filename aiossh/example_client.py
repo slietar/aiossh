@@ -65,6 +65,7 @@ class ExampleClient(Client):
 
     async def pipe_stdin_to_pty(pty_session: PTYSession):
       async for chunk in iter_reader(activity.stdin):
+        # logger.debug(f'Received {chunk!r} from stdin')
         pty_session.write(chunk)
 
     async def pipe_pty_to_stdout(pty_session: PTYSession):

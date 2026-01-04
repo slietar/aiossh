@@ -688,12 +688,8 @@ class Connection:
                 if (session is None) or (session.activity is None):
                   raise ProtocolError
 
-                await session.activity.stdout.write(message.data)
-
-                # self.write_message(ChannelDataMessage(
-                #   recipient_channel_id=message.recipient_channel_id,
-                #   data=message.data.replace(b'\r', b'\n'),
-                # ))
+                session.activity.stdin._feed(message.data)
+                # session.activity.stdin._feed(message.data.replace(b'\r', b'\n'))
 
               case _:
                 self.write_message(UnimplementedMessage(message_sequence_number))
