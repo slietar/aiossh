@@ -2,6 +2,7 @@ import hashlib
 import logging
 import struct
 from dataclasses import dataclass
+from typing import override
 
 from cryptography.hazmat.primitives.asymmetric import dh
 
@@ -24,9 +25,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class DhKeyExchange(KeyExchange):
+  @override
   def hash(self, data: bytes, /) -> bytes:
     return hashlib.sha256(data).digest()
 
+  @override
   async def run(
     self,
     conn,
@@ -80,7 +83,7 @@ class DhKeyExchange(KeyExchange):
 
     assert conn.host_key is not None
 
-    encoded_host_public_key = conn.host_key.encode_public_key()
+    encoded_host_public_key = conn.host_key.to_public_key().encode()
     encoded_shared_secret = encode_mpint(int.from_bytes(shared_key))
 
     assert conn.client_ident_string is not None

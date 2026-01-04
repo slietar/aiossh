@@ -2,10 +2,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable
 from typing import Optional
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
-
 from ..messages.user_auth import AuthenticationMethodName
+from ..public.base import PublicKey
 from ..session import Session
 from .session import SessionResult
 
@@ -17,7 +15,7 @@ class Client(ABC):
   async def get_auth_methods(self, user_name: str) -> set[AuthenticationMethodName]:
     ...
 
-  async def auth_with_public_key(self, user_name: str, key: Ed25519PublicKey | RSAPublicKey, *, in_use: bool) -> bool:
+  async def auth_with_public_key(self, user_name: str, key: PublicKey, *, in_use: bool) -> bool:
     raise NotImplementedError
 
 

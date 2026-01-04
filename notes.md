@@ -21,6 +21,18 @@
 - Global request: "cancel-tcpip-forward"
 
 
+Public keys
+
+- ssh-rsa (RFC 4253)
+  - ssh-rsa (RFC 4253)
+  - rsa-sha2-[256/512] (RFC 8332)
+- ecdsa-sha2-[nistp256/nistp384/nistp521] (RFC 5656)
+  - ecdsa-sha2-[nistp256/nistp384/nistp521] (RFC 5656)
+- ssh-ed25519 (RFC 8709)
+  - ssh-ed25519
+
+
+
 ## References
 
 - [RFC 4250](https://datatracker.ietf.org/doc/html/rfc4250)

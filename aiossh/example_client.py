@@ -4,16 +4,15 @@ from asyncio import TaskGroup
 from pathlib import Path
 from typing import override
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.serialization import ssh_key_fingerprint
 
 from .abstract.client import Client
-from .abstract.session import SessionExitStatus
 from .error import UnreachableError
 from .messages.user_auth import AuthenticationMethodName
 from .pty import PTYSession, iter_reader
+from .public.ed25519 import ED25519PublicKey
+from .public.rsa import RSAPublicKey
 
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,7 @@ class ExampleClient(Client):
   @override
   async def auth_with_public_key(self, user_name, key, *, in_use) -> bool:
     match key:
-      case Ed25519PublicKey():
+      case ED25519PublicKey():
         key_type = 'ED25519'
       case RSAPublicKey():
         key_type = 'RSA'
@@ -44,7 +43,7 @@ class ExampleClient(Client):
       }
     }
 
-    fingerprint = ssh_key_fingerprint(key, hash_algorithm=SHA256())
+    fingerprint = ssh_key_fingerprint(key.key, hash_algorithm=SHA256())
 
     if fingerprint in authorized_fingerprints:
       if in_use:

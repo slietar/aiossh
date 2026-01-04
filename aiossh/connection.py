@@ -24,7 +24,6 @@ from .error import (
   UnreachableError,
 )
 from .flow import MessageFlow
-from .host_key import HostKey
 from .ident_string import IdentString
 from .integrity.base import IntegrityVerification
 from .integrity.resolve import (
@@ -63,6 +62,7 @@ from .messages.kex_init import KexInitMessage
 from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
 from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
+from .public.base import PrivateKey
 from .session import Session, SessionActivity, SessionPTY
 from .stream import AsyncWritableStreamImpl
 from .structures.primitives import encode_mpint, encode_name_list
@@ -109,7 +109,7 @@ class Connection:
   algorithm_selection: Optional[AlgorithmSelection] = field(default=None, init=False)
   encryption_in: Optional[Encryption] = field(default=None, init=False)
   encryption_out: Optional[Encryption] = field(default=None, init=False)
-  host_key: Optional[HostKey] = field(default=None, init=False)
+  host_key: Optional[PrivateKey] = field(default=None, init=False)
   integrity_verification_in: Optional[IntegrityVerification] = field(default=None, init=False)
   integrity_verification_out: Optional[IntegrityVerification] = field(default=None, init=False)
 

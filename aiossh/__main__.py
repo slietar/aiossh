@@ -6,10 +6,10 @@ import signal
 from pathlib import Path
 
 import aiodrive
-from cryptography.hazmat.primitives.asymmetric import rsa
 
 from .example_client import ExampleClient
-from .host_key import HostKey, RSAHostKey
+from .public.base import PrivateKey
+from .public.rsa import RSAPrivateKey
 from .server import Server
 
 
@@ -29,15 +29,12 @@ async def main():
 
   if host_keys_path.exists():
     with host_keys_path.open('rb') as file:
-      host_keys: list[HostKey] = pickle.load(file)
+      host_keys: list[PrivateKey] = pickle.load(file)
   else:
-    host_keys: list[HostKey] = [
+    host_keys: list[PrivateKey] = [
       # ED25519HostKey(ed25519.Ed25519PrivateKey.generate()),
       # ECDSAHostKey(ec.generate_private_key(ec.SECP256R1())),
-      RSAHostKey(
-        private_key=rsa.generate_private_key(public_exponent=65537, key_size=2048),
-        supported_algorithms=frozenset({'ssh-rsa', 'rsa-sha2-256'}),
-      ),
+      RSAPrivateKey.generate(),
     ]
 
     host_keys_path.parent.mkdir(exist_ok=True, parents=True)
