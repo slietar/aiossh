@@ -13,7 +13,7 @@ from asyncio import StreamReader, TaskGroup
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO
+from typing import IO, Optional
 
 import aiodrive
 
@@ -28,6 +28,8 @@ class PTYSession:
   _master_fd: int = field(repr=False)
   process: aiodrive.Process
   reader: StreamReader
+
+  code: Optional[int] = None
 
   def resize(self, size: os.terminal_size, /):
     buf = array.array('H', [size.lines, size.columns, 0, 0])
@@ -50,10 +52,14 @@ class PTYSession:
       stdout=slave_fd,
     )
 
+    async def wait():
+      await process.wait(first_signal=signal.SIGTERM)
+      raise aiodrive.ProcessTerminatedException(0)
+
+    session = None
+
     try:
-      async with aiodrive.contextualize(process.wait(
-        first_signal=signal.SIGTERM,
-      )):
+      async with aiodrive.contextualize(wait()):
         try:
           os.close(slave_fd)
 
@@ -69,8 +75,14 @@ class PTYSession:
           yield session
     except aiodrive.ProcessTerminatedException as e: # TODO: Use except*
       logger.info(f'Process terminated with code {e.code}')
+
+      if session is not None:
+        session.code = e.code
     else:
       logger.info('Process exited normally')
+
+      if session is not None:
+        session.code = 0
 
 
 @contextlib.contextmanager

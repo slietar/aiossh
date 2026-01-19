@@ -688,6 +688,7 @@ class Connection:
                 if (session is None) or (session.activity is None):
                   raise ProtocolError
 
+                print(f'Received {message.data!r}')
                 session.activity.stdin._feed(message.data)
                 # session.activity.stdin._feed(message.data.replace(b'\r', b'\n'))
 

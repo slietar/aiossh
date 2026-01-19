@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.serialization import ssh_key_fingerprint
 
 from .abstract.client import Client
+from .abstract.session import SessionExitStatus
 from .error import UnreachableError
 from .messages.user_auth import AuthenticationMethodName
 from .pty import PTYSession, iter_reader
@@ -78,8 +79,6 @@ class ExampleClient(Client):
     #     session.resize(os.get_terminal_size())
 
 
-    # pty_session = None
-
     async with PTYSession.create(
       os.environ['SHELL'],
       cwd=Path.home(),
@@ -91,6 +90,6 @@ class ExampleClient(Client):
         group.create_task(pipe_stdin_to_pty(pty_session))
         # group.create_task(watch_terminal_size(session))
 
-
-    # if pty_session is not None:
-    #   return SessionExitStatus(pty_session.process.returncode)
+    if pty_session is not None:
+      assert pty_session.code is not None
+      return SessionExitStatus(pty_session.code)
