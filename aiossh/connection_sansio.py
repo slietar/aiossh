@@ -1,9 +1,13 @@
+import asyncio
 import logging
+import signal
 import struct
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Optional
+
+import aiodrive
 
 from .algorithms import AlgorithmSelection
 from .encryption.base import Encryption
@@ -11,7 +15,6 @@ from .error import (
   IntegrityVerificationError,
   ProtocolError,
   ProtocolVersionNotSupportedError,
-  UnreachableError,
 )
 from .ident_string import IdentString
 from .integrity.base import IntegrityVerification
@@ -66,7 +69,7 @@ class SansIOConnection:
 
   _sequence_number_in: int = field(default=0, init=False)
   _sequence_number_out: int = field(default=0, init=False)
-  _session_id: Optional[bytes] = None
+  # _session_id: Optional[bytes] = field(init=False)
 
   _algorithm_selection: Optional[AlgorithmSelection] = field(default=None, init=False)
   _encryption_in: Optional[Encryption] = field(default=None, init=False)
@@ -75,9 +78,9 @@ class SansIOConnection:
   _integrity_verification_in: Optional[IntegrityVerification] = field(default=None, init=False)
   _integrity_verification_out: Optional[IntegrityVerification] = field(default=None, init=False)
 
-  _receive_buffer: bytes = field(default_factory=bytes)
-  _send_buffer: bytes = field(default_factory=bytes)
-  _events: deque[Event] = field(default_factory=deque)
+  _receive_buffer: bytes = field(default_factory=bytes, init=False)
+  _send_buffer: bytes = field(default_factory=bytes, init=False)
+  _events: deque[Event] = field(default_factory=deque, init=False)
   _received_partial_packet: Optional[bytes] = field(default=None, init=False)
 
   def __post_init__(self):
@@ -155,8 +158,8 @@ class SansIOConnection:
 
         return
 
-      self._receive_buffer = self._receive_buffer[(termination_index + 2):]
       client_ident_string_terminated = self._receive_buffer[:termination_index]
+      self._receive_buffer = self._receive_buffer[(termination_index + 2):]
 
       try:
         self._client_ident_string = IdentString.decode(client_ident_string_terminated[:-2])
@@ -180,6 +183,7 @@ class SansIOConnection:
 
       block_size_or_zero = self._encryption_in.block_size() if self._encryption_in is not None else 0
       digest_size_or_zero = self._integrity_verification_in.digest_size if self._integrity_verification_in is not None else 0
+
 
       # Read packet length (without the length itself) or first block
 
@@ -214,19 +218,22 @@ class SansIOConnection:
 
       if self._encryption_in is not None:
         missing_block_count = (packet_length_size + packet_length - 1) // self._encryption_in.block_size()
-        packet_rest = self._receive(self._encryption_in.block_size() * missing_block_count)
+        missing_byte_count = self._encryption_in.block_size() * missing_block_count
+      else:
+        missing_byte_count = packet_length
 
-        if packet_rest is None:
-          break
+      rest = self._receive(missing_byte_count + digest_size_or_zero)
 
+      if rest is None:
+        break
+
+      packet_rest = rest[:missing_byte_count]
+      digest = rest[missing_byte_count:]
+
+      if self._encryption_in is not None:
         packet_with_length = partial_packet + self._encryption_in.decrypt_blocks(packet_rest)
         packet_after_length = packet_with_length[packet_length_size:]
       else:
-        packet_rest = self._receive(packet_length)
-
-        if packet_rest is None:
-          break
-
         packet_after_length = packet_rest
         packet_with_length = partial_packet + packet_after_length
 
@@ -247,21 +254,71 @@ class SansIOConnection:
       # Verify integrity using MAC
       # See: RFC 4253 Section 6.4
 
-      sequence_number = self.sequence_number_in
+      sequence_number = self._sequence_number_in
 
       if self._integrity_verification_in is not None:
-        expected_digest = await self.read(self._integrity_verification_in.digest_size)
-
         self._integrity_verification_in.start(sequence_number)
         self._integrity_verification_in.update(packet_with_length)
         produced_digest = self._integrity_verification_in.digest()
 
-        if expected_digest != produced_digest:
+        if digest != produced_digest:
           raise IntegrityVerificationError
 
 
       # Return payload
 
-      self.sequence_number_in += 1
+      self._sequence_number_in += 1
 
-      return payload, sequence_number
+      if len(payload) < 1:
+        raise ProtocolError
+
+      message_id = payload[0]
+      LOGGER.debug(f'Received message id {message_id} (sequence number {sequence_number})')
+
+
+async def main():
+  async def tcp_handler(tcp_connection: aiodrive.Connection):
+    LOGGER.debug(f'Incoming connection from {tcp_connection.client_name} to {tcp_connection.server_name}')
+
+    conn = SansIOConnection(
+      settings=SansIOConnectionSettings(
+        software_version='aiossh_0.0.0',
+      ),
+    )
+
+    while True:
+      for event in conn.events():
+        print('Event:', event)
+
+        match event:
+          case DataEvent(chunk):
+            tcp_connection.writer.write(chunk)
+            await tcp_connection.writer.drain()
+
+      chunk = await tcp_connection.reader.read(65_536)
+      conn.feed(chunk)
+
+
+  try:
+    with aiodrive.handle_signal([signal.SIGINT, signal.SIGTERM]):
+      async with aiodrive.TCPServer.listen(
+        tcp_handler,
+        host=['127.0.0.1', '::1'],
+        port=1302,
+      ) as tcp_server:
+        for binding in tcp_server.bindings:
+          LOGGER.info(f'Listening on {binding}')
+
+        await aiodrive.wait_forever()
+  except aiodrive.SignalHandledException as e:
+    print('\r', end='')
+    LOGGER.info(f'Received {signal.Signals(e.signal).name}')
+
+
+if __name__ == '__main__':
+  logging.basicConfig(
+    format='[%(levelname)s] %(name)s    %(message)s',
+    level=logging.DEBUG,
+  )
+
+  asyncio.run(main())
