@@ -3,7 +3,7 @@ name = "aiossh"
 version = "0.0"
 requires-python = ">=3.14"
 dependencies = [
-    "aiodrive~=3.0",
+    "aiodrive~=5.0",
     "cryptography~=46.0",
     "umac~=2.0",
 ]
