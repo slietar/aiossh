@@ -7,6 +7,8 @@ from .messages.kex_init import KexInitMessage
 
 
 type KexAlgorithmName = Literal[
+  'curve25519-sha256',
+  'curve25519-sha512',
   'diffie-hellman-group-exchange-sha256',
   'ecdh-sha2-nistp256',
   'ecdh-sha2-nistp384',
