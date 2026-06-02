@@ -308,9 +308,8 @@ class Connection:
 
     # Run key exchange
 
-    CurrentKeyExchange = resolve_key_exchange(self.algorithm_selection.kex_algorithm)
+    key_exchange = resolve_key_exchange(self.algorithm_selection.kex_algorithm)
 
-    key_exchange = CurrentKeyExchange()
     exchange_hash, shared_key = await key_exchange.run(
       self,
       read_message,

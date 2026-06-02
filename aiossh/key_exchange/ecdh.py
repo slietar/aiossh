@@ -1,4 +1,3 @@
-import hashlib
 from dataclasses import dataclass
 from typing import ClassVar, override
 
@@ -10,20 +9,21 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePublicKey,
     generate_private_key,
 )
+from cryptography.hazmat.primitives.hashes import Hash
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
     PublicFormat,
 )
 
 from ..encoding import Codable
+from ..error import ProtocolError
 from ..messages.base import Message
-from ..public.ecdsa import ECDSAIdentifier
+from ..public.ecdsa import ECDSAIdentifier, get_hash_from_curve_size
 from ..structures.primitives import encode_mpint, encode_string
 from .base import KeyExchange
 
 
 # See: RFC 5656 Section 4
-
 
 @dataclass(kw_only=True, slots=True)
 class KexEcdhInitMessage(Codable, Message):
@@ -54,11 +54,20 @@ def get_curve_from_identifier(identifier: ECDSAIdentifier):
 
 @dataclass(slots=True)
 class EcdhKeyExchange(KeyExchange):
-  # identifier: ECDSAIdentifier
+  identifier: ECDSAIdentifier
+
+  @property
+  def curve(self):
+    return get_curve_from_identifier(self.identifier)
 
   @override
-  def hash(self, data: bytes, /) -> bytes:
-    return hashlib.sha256(data).digest()
+  def hash(self, data: bytes, /):
+    digest = Hash(
+      get_hash_from_curve_size(self.curve.key_size),
+    )
+
+    digest.update(data)
+    return digest.finalize()
 
   @override
   async def run(
@@ -70,23 +79,22 @@ class EcdhKeyExchange(KeyExchange):
   ):
     init_message, _ = await read(KexEcdhInitMessage)
 
-    identifier = 'nistp256'
-    curve = get_curve_from_identifier(identifier)
+    try:
+      client_public_key = EllipticCurvePublicKey.from_encoded_point(self.curve, init_message.q_h)
+    except ValueError as e:
+      raise ProtocolError from e
 
-    client_public_key = EllipticCurvePublicKey.from_encoded_point(curve, init_message.q_h)
-    private_key = generate_private_key(curve)
+    private_key = generate_private_key(self.curve)
 
     server_public_key_string = private_key.public_key().public_bytes(
       encoding=Encoding.X962,
       format=PublicFormat.UncompressedPoint,
     )
 
-
     shared_key = private_key.exchange(
       ECDH(),
       client_public_key,
     )
-
 
     assert conn.host_key is not None
     encoded_host_public_key = conn.host_key.to_public_key().encode()
