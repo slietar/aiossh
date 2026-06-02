@@ -8,6 +8,7 @@ from .messages.kex_init import KexInitMessage
 
 type KexAlgorithmName = Literal[
   'diffie-hellman-group-exchange-sha256',
+  'ecdh-sha2-nistp256',
 ]
 
 type HostKeyAlgorithmName = Literal[

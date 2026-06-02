@@ -18,7 +18,11 @@ from cryptography.hazmat.primitives.serialization import (
   load_pem_private_key,
 )
 
-from ..structures.primitives import encode_mpint, encode_name, encode_string
+from ..structures.primitives import (
+  encode_mpint,
+  encode_name,
+  encode_string,
+)
 from ..util import ReadableBytesIO
 from .base import PrivateKey, PublicKey
 
