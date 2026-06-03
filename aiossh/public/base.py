@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Container
 
-from ..util import ReadableBytesIO
+from ..reader import Readable
 
 
 class PublicKey[AlgorithmName](ABC):
@@ -15,7 +15,7 @@ class PublicKey[AlgorithmName](ABC):
 
   @classmethod
   @abstractmethod
-  def decode(cls, reader: ReadableBytesIO) -> PublicKey:
+  def decode(cls, reader: Readable) -> PublicKey:
     ...
 
 

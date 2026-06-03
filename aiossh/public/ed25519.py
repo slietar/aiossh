@@ -14,13 +14,13 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from ..error import ProtocolError
+from ..reader import Readable, Reader
 from ..structures.primitives import (
   decode_name,
   decode_string,
   encode_name,
   encode_string,
 )
-from ..util import ReadableBytesIO, ReadableBytesIOImpl
 from .base import PrivateKey, PublicKey
 
 
@@ -43,7 +43,7 @@ class ED25519PublicKey(PublicKey[ED25519SignatureAlgorithmName]):
 
   @override
   def decode_verify(self, algorithm: ED25519SignatureAlgorithmName, encoded_signature: bytes, data: bytes):
-    with ReadableBytesIOImpl(encoded_signature) as reader:
+    with Reader(encoded_signature) as reader:
       if decode_name(reader) != 'ssh-ed25519':
         raise ProtocolError
 
@@ -58,7 +58,7 @@ class ED25519PublicKey(PublicKey[ED25519SignatureAlgorithmName]):
 
   @override
   @classmethod
-  def decode(cls, reader: ReadableBytesIO):
+  def decode(cls, reader: Readable):
     if decode_name(reader) != 'ssh-ed25519':
       raise ProtocolError
 

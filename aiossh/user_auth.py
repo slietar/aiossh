@@ -15,8 +15,8 @@ from .messages.user_auth import (
   UserAuthSuccessMessage,
 )
 from .public.resolve import resolve_public_key
+from .reader import Reader
 from .structures.primitives import encode_string
-from .util import ReadableBytesIOImpl
 
 
 if TYPE_CHECKING:
@@ -60,7 +60,7 @@ async def run_user_auth(conn: Connection, read: MessageFlowRead) -> bool:
         conn.write_message(UserAuthFailureMessage(supported_methods=list(supported_methods)))
         return False
 
-      with ReadableBytesIOImpl(request_message.public_key) as reader:
+      with Reader(request_message.public_key) as reader:
         key = public_key_type.decode(reader)
 
       if request_message.signature is not None:

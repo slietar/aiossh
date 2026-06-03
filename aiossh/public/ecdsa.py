@@ -18,12 +18,12 @@ from cryptography.hazmat.primitives.serialization import (
   load_pem_private_key,
 )
 
+from ..reader import Readable
 from ..structures.primitives import (
   encode_mpint,
   encode_name,
   encode_string,
 )
-from ..util import ReadableBytesIO
 from .base import PrivateKey, PublicKey
 
 
@@ -79,7 +79,7 @@ class ECDSAPublicKey(PublicKey[ECDSASignatureAlgorithmName]):
 
   @classmethod
   @override
-  def decode(cls, reader: ReadableBytesIO):
+  def decode(cls, reader: Readable):
     raise NotImplementedError
 
 

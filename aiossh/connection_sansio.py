@@ -21,7 +21,7 @@ from .error import (
 from .ident_string import IdentString
 from .integrity.base import IntegrityVerification
 from .key_exchange.resolve import resolve_key_exchange
-from .messages.base import EncodableMessage
+from .messages.base import Message
 from .messages.core import DisconnectMessage, DisconnectReason
 from .messages.kex_init import KexInitMessage
 from .packet import encode_packet
@@ -108,7 +108,7 @@ class SansIOConnection:
   def _send(self, chunk: bytes, /):
     self._send_buffer += chunk
 
-  def _send_message(self, message: EncodableMessage):
+  def _send_message(self, message: Message):
     payload = message.encode_payload()
     packet_with_length = encode_packet(
       payload,

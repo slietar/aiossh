@@ -2,12 +2,21 @@ import builtins
 import dataclasses
 import inspect
 import typing
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from types import NoneType
-from typing import Annotated, Any, ClassVar, Literal, Self, get_type_hints
+from typing import (
+  Annotated,
+  Any,
+  ClassVar,
+  Literal,
+  Protocol,
+  Self,
+  get_type_hints,
+  runtime_checkable,
+)
 
 from .error import ProtocolError
+from .reader import Readable, Reader
 from .structures.primitives import (
   decode_boolean,
   decode_mpint,
@@ -24,17 +33,15 @@ from .structures.primitives import (
   encode_text,
   encode_uint32,
 )
-from .util import ReadableBytesIO, ReadableBytesIOImpl
 
 
-class CodableABC(ABC):
-  @abstractmethod
+@runtime_checkable
+class Codable(Protocol):
   def encode(self) -> bytes:
     ...
 
   @classmethod
-  @abstractmethod
-  def decode(cls, reader: ReadableBytesIO) -> Self:
+  def decode(cls, reader: Readable) -> Self:
     ...
 
 
@@ -42,7 +49,7 @@ class CodableABC(ABC):
 
 @dataclass(slots=True)
 class CodableEncoding:
-  codable: CodableABC
+  codable: Codable
 
 @dataclass(slots=True)
 class FixedSizeBytesEncoding:
@@ -131,7 +138,7 @@ def get_class_encodings(cls):
         encodings[field.name] = 'uint32'
       case builtins.str:
         encodings[field.name] = 'text'
-      case _ if inspect.isclass(current_type) and issubclass(current_type, CodableABC):
+      case _ if inspect.isclass(current_type) and issubclass(current_type, Codable):
         encodings[field.name] = CodableEncoding(current_type) # type: ignore
       case _:
         raise TypeError(f'Unsupported type: {field_type!r}')
@@ -140,7 +147,7 @@ def get_class_encodings(cls):
 
 
 @dataclass(slots=True)
-class Codable:
+class AutoCodable:
   def encode(self):
     output = b''
 
@@ -166,6 +173,8 @@ class Codable:
           output += encode_string(codable.encode())
         case FixedSizeBytesEncoding(size):
           assert len(value) == size
+          assert isinstance(value, bytes)
+
           output += value
         case UnionEncoding(discriminant=discriminant, variants=variants):
           if not isinstance(value, expected_variant_type := variants[getattr(self, discriminant)]):
@@ -178,7 +187,7 @@ class Codable:
     return output
 
   @classmethod
-  def decode(cls, reader: ReadableBytesIO):
+  def decode(cls, reader: Readable):
     field_values = dict[str, Any]()
 
     for field_name, encoding in get_class_encodings(cls).items():
@@ -198,7 +207,7 @@ class Codable:
         case 'uint32':
           field_values[field_name] = decode_uint32(reader)
         case CodableEncoding(codable):
-          with ReadableBytesIOImpl(decode_string(reader)) as codable_reader:
+          with Reader(decode_string(reader)) as codable_reader:
             field_values[field_name] = codable.decode(codable_reader)
         case FixedSizeBytesEncoding(size):
           field_values[field_name] = reader.read(size)
@@ -245,16 +254,16 @@ if __name__ == '__main__':
   #   print(AdminUser.decode(reader))
 
   @dataclass
-  class A1(Codable):
+  class A1(AutoCodable):
     key: ClassVar[str] = '1'
     x: int = 56
 
   @dataclass
-  class A2(Codable):
+  class A2(AutoCodable):
     key: ClassVar[str] = '2'
 
   @dataclass
-  class Entry(Codable):
+  class Entry(AutoCodable):
     variant: str
     details: Annotated[A1 | None, UnionAnnotation('variant', 'key')]
 
@@ -264,5 +273,5 @@ if __name__ == '__main__':
   print(encoded.hex(' '))
   print(repr(encoded))
 
-  with ReadableBytesIOImpl(b'\x00\x00\x00\x012\x00') as reader:
+  with Reader(b'\x00\x00\x00\x012\x00') as reader:
     print(Entry.decode(reader))

@@ -1,54 +1,32 @@
 from abc import ABC, abstractmethod
-from typing import ClassVar, Self
+from typing import ClassVar, Self, override
 
-from ..encoding import CodableABC
-from ..util import ReadableBytesIO, ReadableBytesIOImpl
+from ..encoding import AutoCodable
+from ..reader import Reader
 
 
-class DecodableMessage(ABC):
-  """
-  @deprecated
-  """
-
+class Message(ABC):
   id: ClassVar[int]
+
+  @abstractmethod
+  def encode_payload(self) -> bytes:
+    ...
 
   @classmethod
   @abstractmethod
-  def decode(cls, reader: ReadableBytesIO) -> Self:
+  def decode_payload(cls, payload: bytes) -> Self:
     ...
 
+
+class AutoCodableMessage(AutoCodable, Message):
+  @override
+  def encode_payload(self):
+    return bytes([self.id]) + self.encode()
+
+  @override
   @classmethod
   def decode_payload(cls, payload: bytes) -> Self:
     assert payload[0] == cls.id
 
-    with ReadableBytesIOImpl(payload[1:]) as reader:
-      return cls.decode(reader)
-
-
-class EncodableMessage(ABC):
-  """
-  @deprecated
-  """
-
-  id: ClassVar[int]
-
-  @abstractmethod
-  def encode(self) -> bytes:
-    ...
-
-  def encode_payload(self):
-    return bytes([self.id]) + self.encode()
-
-
-class Message(CodableABC, DecodableMessage, EncodableMessage, ABC):
-  id: ClassVar[int]
-
-  def encode_payload(self):
-    return bytes([self.id]) + self.encode()
-
-  @classmethod
-  def decode_payload(cls, payload: bytes) -> Self:
-    assert payload[0] == cls.id
-
-    with ReadableBytesIOImpl(payload[1:]) as reader:
+    with Reader(payload[1:]) as reader:
       return cls.decode(reader)

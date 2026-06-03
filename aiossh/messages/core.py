@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import ClassVar, override
 
-from ..encoding import Codable
 from ..error import ProtocolError
+from ..reader import Readable
 from ..structures.primitives import (
   decode_string,
   decode_text,
@@ -11,8 +11,7 @@ from ..structures.primitives import (
   encode_text,
   encode_uint32,
 )
-from ..util import ReadableBytesIO
-from .base import DecodableMessage, EncodableMessage, Message
+from .base import AutoCodableMessage
 from .types import LanguageTag
 
 
@@ -35,7 +34,7 @@ class DisconnectReason(IntEnum):
 
 
 @dataclass(kw_only=True, slots=True)
-class DisconnectMessage(Codable, Message):
+class DisconnectMessage(AutoCodableMessage):
   id: ClassVar[int] = 1
 
   reason_code: int
@@ -44,7 +43,7 @@ class DisconnectMessage(Codable, Message):
 
 
 @dataclass(kw_only=True, slots=True)
-class DebugMessage(Codable, Message):
+class DebugMessage(AutoCodableMessage):
   id: ClassVar[int] = 4
 
   always_display: bool
@@ -53,19 +52,19 @@ class DebugMessage(Codable, Message):
 
 
 @dataclass(slots=True)
-class UnimplementedMessage(Codable, Message):
+class UnimplementedMessage(AutoCodableMessage):
   id: ClassVar[int] = 3
 
   sequence_number: int
 
 
 @dataclass(slots=True)
-class NewKeysMessage(Codable, Message):
+class NewKeysMessage(AutoCodableMessage):
   id: ClassVar[int] = 21
 
 
 @dataclass(kw_only=True, slots=True)
-class ExtInfoMessage(DecodableMessage, EncodableMessage):
+class ExtInfoMessage(AutoCodableMessage):
   id: ClassVar[int] = 7
 
   extensions: dict[str, bytes]
@@ -78,7 +77,7 @@ class ExtInfoMessage(DecodableMessage, EncodableMessage):
 
   @classmethod
   @override
-  def decode(cls, reader: ReadableBytesIO):
+  def decode(cls, reader: Readable):
     extension_count = decode_uint32(reader)
     extensions = dict[str, bytes]()
 

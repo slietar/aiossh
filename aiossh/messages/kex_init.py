@@ -2,15 +2,15 @@ import os
 from dataclasses import dataclass, field
 from typing import Annotated, ClassVar, final
 
-from ..encoding import Codable, FixedSizeBytesAnnotation, NameList
-from .base import Message
+from ..encoding import FixedSizeBytesAnnotation, NameList
+from .base import AutoCodableMessage
 
 
 # Client & server
 
 @final
 @dataclass(kw_only=True, slots=True)
-class KexInitMessage(Codable, Message):
+class KexInitMessage(AutoCodableMessage):
   id: ClassVar[int] = 20
 
   _random: Annotated[bytes, FixedSizeBytesAnnotation(16)] = field(default_factory=(lambda: os.urandom(16)), init=False, repr=False)

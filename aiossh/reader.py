@@ -4,7 +4,7 @@ from typing import Protocol
 from .error import ProtocolError
 
 
-class ReadableBytesIO(Protocol):
+class Readable(Protocol):
   def read(self, byte_count: int, /) -> bytes:
     ...
 
@@ -12,7 +12,7 @@ class ReadableBytesIO(Protocol):
     ...
 
 @dataclass(slots=True)
-class ReadableBytesIOImpl:
+class Reader:
   data: bytes
   position: int = field(default=0, init=False)
 

@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from ..error import ProtocolError, UnreachableError
+from ..reader import Readable, Reader
 from ..structures.primitives import (
   decode_mpint,
   decode_name,
@@ -30,7 +31,6 @@ from ..structures.primitives import (
   encode_name,
   encode_string,
 )
-from ..util import ReadableBytesIO, ReadableBytesIOImpl
 from .base import PrivateKey, PublicKey
 
 
@@ -64,7 +64,7 @@ class RSAPublicKey(PublicKey[RSASignatureAlgorithmName]):
 
   @override
   def decode_verify(self, algorithm: RSASignatureAlgorithmName, encoded_signature: bytes, data: bytes):
-    with ReadableBytesIOImpl(encoded_signature) as reader:
+    with Reader(encoded_signature) as reader:
       if decode_name(reader) != algorithm:
         raise ProtocolError
 
@@ -84,7 +84,7 @@ class RSAPublicKey(PublicKey[RSASignatureAlgorithmName]):
 
   @classmethod
   @override
-  def decode(cls, reader: ReadableBytesIO):
+  def decode(cls, reader: Readable):
     if decode_name(reader) != 'ssh-rsa':
       raise ProtocolError
 

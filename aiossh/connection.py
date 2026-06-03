@@ -63,11 +63,11 @@ from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
 from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
 from .public.base import PrivateKey
+from .reader import Reader
 from .session import Session, SessionActivity, SessionPTY
 from .stream import AsyncWritableStreamImpl
 from .structures.primitives import encode_mpint, encode_name_list
 from .user_auth import run_user_auth
-from .util import ReadableBytesIOImpl
 
 
 if TYPE_CHECKING:
@@ -490,7 +490,7 @@ class Connection:
                 if self.key_exchange_flow is not None:
                   raise ProtocolError
 
-                message_payload_io = ReadableBytesIOImpl(message_payload[1:])
+                message_payload_io = Reader(message_payload[1:])
                 service_request = ServiceRequestMessage.decode(message_payload_io)
 
                 match service_request.service_name:
