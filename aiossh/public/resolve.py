@@ -1,9 +1,12 @@
 from typing import Optional
 
 from .base import PublicKey
-from .ecdsa import ECDSAPublicKey
-from .ed25519 import ED25519PublicKey
-from .rsa import RSAPublicKey
+from .ecdsa import ECDSAPublicKey, ECDSASignatureAlgorithmName
+from .ed25519 import ED25519PublicKey, ED25519SignatureAlgorithmName
+from .rsa import RSAPublicKey, RSASignatureAlgorithmName
+
+
+type SignatureAlgorithmName = ECDSASignatureAlgorithmName | ED25519SignatureAlgorithmName | RSASignatureAlgorithmName
 
 
 def resolve_public_key(signature_name: str, /) -> Optional[type[PublicKey]]:

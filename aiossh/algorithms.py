@@ -1,9 +1,10 @@
 import typing
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import Literal, Optional, cast
 
 from .error import AlgorithmNegotiationError
 from .messages.kex_init import KexInitMessage
+from .public.resolve import SignatureAlgorithmName
 
 
 type KexAlgorithmName = Literal[
@@ -46,18 +47,18 @@ type MacAlgorithmName = Literal[
 type CompressionAlgorithmName = Literal['none']
 
 
-extract = lambda x: set(typing.get_args(x.__value__))
+extract = lambda x: list(typing.get_args(x.__value__))
 
 @dataclass(kw_only=True, slots=True)
 class AlgorithmSets:
-  kex_algorithms: set[KexAlgorithmName] = field(default_factory=(lambda: extract(KexAlgorithmName)))
-  server_host_key_algorithms: set[HostKeyAlgorithmName] = field(default_factory=(lambda: extract(HostKeyAlgorithmName)))
-  encryption_algorithms_client_to_server: set[EncryptionAlgorithmName] = field(default_factory=(lambda: extract(EncryptionAlgorithmName)))
-  encryption_algorithms_server_to_client: set[EncryptionAlgorithmName] = field(default_factory=(lambda: extract(EncryptionAlgorithmName)))
-  mac_algorithms_client_to_server: set[MacAlgorithmName] = field(default_factory=(lambda: extract(MacAlgorithmName)))
-  mac_algorithms_server_to_client: set[MacAlgorithmName] = field(default_factory=(lambda: extract(MacAlgorithmName)))
-  compression_algorithms_client_to_server: set[CompressionAlgorithmName] = field(default_factory=(lambda: extract(CompressionAlgorithmName)))
-  compression_algorithms_server_to_client: set[CompressionAlgorithmName] = field(default_factory=(lambda: extract(CompressionAlgorithmName)))
+  kex_algorithms: list[KexAlgorithmName] = field(default_factory=(lambda: extract(KexAlgorithmName)))
+  server_host_key_algorithms: list[HostKeyAlgorithmName] = field(default_factory=(lambda: extract(HostKeyAlgorithmName)))
+  encryption_algorithms_client_to_server: list[EncryptionAlgorithmName] = field(default_factory=(lambda: extract(EncryptionAlgorithmName)))
+  encryption_algorithms_server_to_client: list[EncryptionAlgorithmName] = field(default_factory=(lambda: extract(EncryptionAlgorithmName)))
+  mac_algorithms_client_to_server: list[MacAlgorithmName] = field(default_factory=(lambda: extract(MacAlgorithmName)))
+  mac_algorithms_server_to_client: list[MacAlgorithmName] = field(default_factory=(lambda: extract(MacAlgorithmName)))
+  compression_algorithms_client_to_server: list[CompressionAlgorithmName] = field(default_factory=(lambda: extract(CompressionAlgorithmName)))
+  compression_algorithms_server_to_client: list[CompressionAlgorithmName] = field(default_factory=(lambda: extract(CompressionAlgorithmName)))
   languages_client_to_server: set[str] = field(default_factory=set)
   languages_server_to_client: set[str] = field(default_factory=set)
 
@@ -105,3 +106,12 @@ class AlgorithmSelection:
   encryption_algorithm_server_to_client: EncryptionAlgorithmName
   mac_algorithm_client_to_server: MacAlgorithmName
   mac_algorithm_server_to_client: MacAlgorithmName
+
+
+@dataclass(kw_only=True, slots=True)
+class ClientExtensions:
+  pass
+
+@dataclass(kw_only=True, slots=True)
+class ServerExtensions:
+  signature_algorithms: Optional[list[SignatureAlgorithmName]] = None
