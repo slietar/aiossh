@@ -2,6 +2,7 @@ import builtins
 import dataclasses
 import inspect
 import typing
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from types import NoneType
 from typing import (
@@ -35,12 +36,24 @@ from .structures.primitives import (
 )
 
 
+# Types
+
 @runtime_checkable
 class Codable(Protocol):
   def encode(self) -> bytes:
     ...
 
   @classmethod
+  def decode(cls, reader: Readable) -> Self:
+    ...
+
+class CodableABC(ABC):
+  @abstractmethod
+  def encode(self) -> bytes:
+    raise NotImplementedError
+
+  @classmethod
+  @abstractmethod
   def decode(cls, reader: Readable) -> Self:
     ...
 

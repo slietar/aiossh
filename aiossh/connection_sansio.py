@@ -2,6 +2,7 @@ import asyncio
 import functools
 import logging
 import operator
+import os
 import signal
 import struct
 from collections import deque
@@ -13,20 +14,29 @@ import aiodrive
 
 from .algorithms import AlgorithmSelection, AlgorithmSets
 from .encryption.base import Encryption
+from .encryption.resolve import resolve_encryption
 from .error import (
   IntegrityVerificationError,
   ProtocolError,
   ProtocolVersionNotSupportedError,
 )
+from .flow import MessageFlow, MessageStub
 from .ident_string import IdentString
 from .integrity.base import IntegrityVerification
+from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import Message
-from .messages.core import DisconnectMessage, DisconnectReason
+from .messages.core import (
+  DisconnectMessage,
+  DisconnectReason,
+  ExtInfoMessage,
+  NewKeysMessage,
+)
 from .messages.kex_init import KexInitMessage
 from .packet import encode_packet
 from .public.base import PrivateKey
 from .public.rsa import RSAPrivateKey
+from .structures.primitives import encode_mpint, encode_name_list, encode_string
 
 
 LOGGER = logging.getLogger(__name__)
@@ -37,10 +47,10 @@ class DataEvent:
   chunk: bytes
 
 @dataclass(slots=True)
-class InitializationEvent:
+class ExchangedKeysEvent:
   pass
 
-type Event = DataEvent | InitializationEvent
+type Event = DataEvent | ExchangedKeysEvent
 
 
 @dataclass(slots=True)
@@ -50,18 +60,17 @@ class SansIOConnectionSettings:
   supported_algorithms: AlgorithmSets = field(default_factory=AlgorithmSets)
 
 
-@dataclass(slots=True)
-class TerminatedState:
-  pass
+# @dataclass(slots=True)
+# class WaitingForKexInitState:
+#   pass
 
-@dataclass(slots=True)
-class WaitingForIdentStringState:
-  pass
+# class RunningKeyExchangeState:
+#   pass
 
-type State = TerminatedState | WaitingForIdentStringState
+# type State = TerminatedState | WaitingForIdentStringState
 
 
-@dataclass(slots=True)
+@dataclass
 class SansIOConnection:
   settings: SansIOConnectionSettings
 
@@ -70,11 +79,15 @@ class SansIOConnection:
 
   _client_ident_string: Optional[IdentString] = field(default=None, init=False)
   _server_ident_string: IdentString = field(init=False)
-  _server_kex_init_payload: bytes = field(init=False)
 
   _sequence_number_in: int = field(default=0, init=False)
   _sequence_number_out: int = field(default=0, init=False)
-  # _session_id: Optional[bytes] = field(init=False)
+  _session_id: Optional[bytes] = field(default=None, init=False)
+
+  # Initialized after key exchange is complete
+  _transmitted_byte_count: int = field(init=False)
+
+  _key_exchange: Optional[MessageFlow[None]] = field(default=None, init=False)
 
   _algorithm_selection: Optional[AlgorithmSelection] = field(default=None, init=False)
   _encryption_in: Optional[Encryption] = field(default=None, init=False)
@@ -95,6 +108,11 @@ class SansIOConnection:
     )
 
     self._send(bytes(self._server_ident_string) + b'\r\n')
+
+  @functools.cached_property
+  def _dh_groups(self):
+    from .primes.well_known import groups as well_known_dh_groups
+    return well_known_dh_groups
 
   def _receive(self, length: int, /):
     if len(self._receive_buffer) < length:
@@ -163,11 +181,12 @@ class SansIOConnection:
 
         return
 
-      client_ident_string_terminated = self._receive_buffer[:termination_index]
+      client_ident_string_unterminated = self._receive_buffer[:termination_index]
       self._receive_buffer = self._receive_buffer[(termination_index + 2):]
 
       try:
-        self._client_ident_string = IdentString.decode(client_ident_string_terminated[:-2])
+        # `client_ident_string_unterminated` already excludes CRLF.
+        self._client_ident_string = IdentString.decode(client_ident_string_unterminated)
       except ProtocolVersionNotSupportedError:
         self._send_message(
           DisconnectMessage(
@@ -181,7 +200,9 @@ class SansIOConnection:
         return
 
       LOGGER.debug(f'Client version: "{self._client_ident_string.software_version}"')
-      self._send_kex_init(is_first=True)
+
+      self._key_exchange = iter(self._run_key_exchange())
+      next(self._key_exchange)
 
     while True:
       packet_length_size = 4
@@ -233,6 +254,8 @@ class SansIOConnection:
       if rest is None:
         break
 
+      self._received_partial_packet = None
+
       packet_rest = rest[:missing_byte_count]
       digest = rest[missing_byte_count:]
 
@@ -278,52 +301,40 @@ class SansIOConnection:
       if len(payload) < 1:
         raise ProtocolError
 
-      self._receive_message(payload, sequence_number)
+      self._receive_message(MessageStub(payload), sequence_number)
 
-  def _receive_message(self, payload: bytes, sequence_number: int):
-    message_id = payload[0]
-    LOGGER.debug(f'Received message id {message_id} (sequence number {sequence_number})')
+  def _receive_message(self, message_stub: MessageStub, sequence_number: int):
+    LOGGER.debug(f'Received message id {message_stub.id} (sequence number {sequence_number})')
 
-    match message_id:
+    match message_stub.id:
       case KexInitMessage.id:
-        message = KexInitMessage.decode_payload(payload)
+        if self._key_exchange is None:
+          self._key_exchange = iter(self._run_key_exchange())
+          next(self._key_exchange)
 
-        # Negotiate algorithms
+        self._key_exchange.send(message_stub)
+      case _ if (message_stub.id == NewKeysMessage.id) or (30 <= message_stub.id <= 49):
+        if self._key_exchange is None:
+          raise ProtocolError
 
-        algorithm_selection = self.settings.supported_algorithms.negotiate(message)
-        host_key = next(key for key in self.settings.host_keys if algorithm_selection.server_host_key_algorithm in key.algorithms())
+        try:
+          self._key_exchange.send(message_stub)
+        except StopIteration:
+          pass
+      case _:
+        raise NotImplementedError(f'Unsupported message id {message_stub.id}')
 
+  def _run_key_exchange(self) -> MessageFlow[None]:
+    assert self._key_exchange is not None
 
-        # Ignore next packet if the preferred algorithms do not match
-
-        if message.first_kex_packet_follows and (
-          (algorithm_selection.kex_algorithm != message.kex_algorithms[0])
-          or (algorithm_selection.server_host_key_algorithm != message.server_host_key_algorithms[0])
-          or (algorithm_selection.encryption_algorithm_client_to_server != message.encryption_algorithms_client_to_server[0])
-          or (algorithm_selection.encryption_algorithm_server_to_client != message.encryption_algorithms_server_to_client[0])
-          or (algorithm_selection.mac_algorithm_client_to_server != message.mac_algorithms_client_to_server[0])
-          or (algorithm_selection.mac_algorithm_server_to_client != message.mac_algorithms_server_to_client[0])
-        ):
-          # TODO: Skip next packet
-          raise NotImplementedError
-
-
-        # Run key exchange
-
-        key_exchange = resolve_key_exchange(algorithm_selection.kex_algorithm)
-
-        print(key_exchange)
-
-
-  def _send_kex_init(self, is_first: bool):
-    # supported_algorithms.server_host_key_algorithms &= functools.reduce(operator.or_, (key.algorithms() for key in self.server.host_keys))
+    is_first = self._session_id is None
 
     usable_server_host_key_algorithms = functools.reduce(operator.or_, (key.algorithms() for key in self.settings.host_keys), set())
     server_host_key_algorithms = [
       algorithm for algorithm in self.settings.supported_algorithms.server_host_key_algorithms if algorithm in usable_server_host_key_algorithms
     ]
 
-    self._server_kex_init_payload = self._send_message(
+    server_kex_init_payload = self._send_message(
       KexInitMessage(
         kex_algorithms=(self.settings.supported_algorithms.kex_algorithms + (['ext-info-s'] if is_first else [])),
         server_host_key_algorithms=list(server_host_key_algorithms),
@@ -338,6 +349,122 @@ class SansIOConnection:
         first_kex_packet_follows=False,
       ),
     )
+
+    client_kex_init_stub = yield
+    client_kex_init = client_kex_init_stub.decode(KexInitMessage)
+    client_kex_init_payload = client_kex_init_stub.payload
+
+
+    # Negotiate algorithms
+
+    algorithm_selection = self.settings.supported_algorithms.negotiate(client_kex_init)
+    host_key = next(key for key in self.settings.host_keys if algorithm_selection.server_host_key_algorithm in key.algorithms())
+
+
+    # Ignore next packet if the preferred algorithms do not match
+
+    if client_kex_init.first_kex_packet_follows and (
+      (algorithm_selection.kex_algorithm != client_kex_init.kex_algorithms[0])
+      or (algorithm_selection.server_host_key_algorithm != client_kex_init.server_host_key_algorithms[0])
+      or (algorithm_selection.encryption_algorithm_client_to_server != client_kex_init.encryption_algorithms_client_to_server[0])
+      or (algorithm_selection.encryption_algorithm_server_to_client != client_kex_init.encryption_algorithms_server_to_client[0])
+      or (algorithm_selection.mac_algorithm_client_to_server != client_kex_init.mac_algorithms_client_to_server[0])
+      or (algorithm_selection.mac_algorithm_server_to_client != client_kex_init.mac_algorithms_server_to_client[0])
+    ):
+      # TODO: Skip next packet
+      raise NotImplementedError
+
+
+    # Run key exchange
+
+    assert self._client_ident_string is not None
+
+    hash_header = (
+        encode_string(bytes(self._client_ident_string))
+      + encode_string(bytes(self._server_ident_string))
+      + encode_string(client_kex_init_payload)
+      + encode_string(server_kex_init_payload)
+    )
+
+    key_exchange = resolve_key_exchange(algorithm_selection.kex_algorithm)
+
+    exchange_hash, shared_key = yield from key_exchange.run_as_server(
+      self,
+      algorithm_selection=algorithm_selection,
+      host_key=host_key,
+      hash_header=hash_header,
+    )
+
+
+    # Compute key exchange output
+    # See: RFC 4253 Section 7.2
+
+    if self._session_id is None:
+      self._session_id = exchange_hash
+
+    session_id = self._session_id
+    encoded_shared_secret = encode_mpint(int.from_bytes(shared_key))
+
+    def derive_key(letter: bytes, size: int):
+      key = key_exchange.hash(encoded_shared_secret + exchange_hash + letter + session_id)
+
+      while len(key) < size:
+        key += key_exchange.hash(encoded_shared_secret + exchange_hash + key)
+
+      return key[:size]
+
+
+    # Establish output algorithms
+
+    self._send_message(NewKeysMessage())
+
+    EncryptionOut = resolve_encryption(algorithm_selection.encryption_algorithm_server_to_client)
+
+    self._encryption_out = EncryptionOut(
+      key=derive_key(b'D', EncryptionOut.key_size()),
+      iv=derive_key(b'B', EncryptionOut.block_size()),
+    )
+
+    self._integrity_verification_out = resolve_integrity_verification(algorithm_selection.mac_algorithm_server_to_client)
+    self._integrity_verification_out.build(
+      derive_key(b'F', self._integrity_verification_out.key_size),
+    )
+
+
+    # Establish input algorithms
+
+    _ = (yield).decode(NewKeysMessage)
+
+    EncryptionIn = resolve_encryption(algorithm_selection.encryption_algorithm_client_to_server)
+
+    self._encryption_in = EncryptionIn(
+      key=derive_key(b'C', EncryptionIn.key_size()),
+      iv=derive_key(b'A', EncryptionIn.block_size()),
+    )
+
+    self._integrity_verification_in = resolve_integrity_verification(algorithm_selection.mac_algorithm_client_to_server)
+    self._integrity_verification_in.build(
+      derive_key(b'E', self._integrity_verification_in.key_size),
+    )
+
+    LOGGER.debug('Done with key exchange')
+
+
+    # Send extensions
+
+    if is_first:
+      self._send_message(
+        ExtInfoMessage(extensions={
+          'server-sig-algs': encode_name_list([
+            'rsa-sha2-256',
+            'rsa-sha2-512',
+            # TODO: List all supported algorithms
+          ]),
+        }),
+      )
+
+    self._events.append(ExchangedKeysEvent())
+    self._key_exchange = None
 
 
 def get_host_keys():
@@ -363,6 +490,8 @@ def get_host_keys():
 
 
 async def main():
+  LOGGER.debug(f'Process id: {os.getpid()}')
+
   async def tcp_handler(tcp_connection: aiodrive.Connection):
     LOGGER.debug(f'Incoming connection from {tcp_connection.client_name} to {tcp_connection.server_name}')
 
@@ -374,6 +503,8 @@ async def main():
     )
 
     while True:
+      # LOGGER.debug('Enumerating events...')
+
       for event in conn.events():
         match event:
           case DataEvent(chunk):
@@ -383,7 +514,12 @@ async def main():
             print('Event:', event)
 
 
+      # LOGGER.debug('Waiting for data...')
       chunk = await tcp_connection.reader.read(65_536)
+
+      if not chunk:
+        break
+
       conn.feed(chunk)
 
 

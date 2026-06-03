@@ -11,7 +11,7 @@ from ..structures.primitives import (
   encode_text,
   encode_uint32,
 )
-from .base import AutoCodableMessage
+from .base import AutoCodableMessage, Message
 from .types import LanguageTag
 
 
@@ -64,7 +64,7 @@ class NewKeysMessage(AutoCodableMessage):
 
 
 @dataclass(kw_only=True, slots=True)
-class ExtInfoMessage(AutoCodableMessage):
+class ExtInfoMessage(Message):
   id: ClassVar[int] = 7
 
   extensions: dict[str, bytes]

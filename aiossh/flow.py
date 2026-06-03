@@ -1,6 +1,6 @@
-from collections.abc import Awaitable, Generator
+from collections.abc import Generator
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Optional
 
 from .error import ProtocolError
 from .messages.base import Message
@@ -8,17 +8,17 @@ from .messages.base import Message
 
 @dataclass(slots=True)
 class MessageStub:
-  _payload: bytes
+  payload: bytes
 
   @property
   def id(self):
-    return self._payload[0]
+    return self.payload[0]
 
   def decode[T: Message](self, message_type: type[T], /) -> T:
     if self.id != message_type.id:
       raise ProtocolError
 
-    return message_type.decode_payload(self._payload)
+    return message_type.decode_payload(self.payload)
 
 
-type MessageFlow = Generator[tuple[bytes, bytes], MessageStub, int]
+type MessageFlow[T] = Generator[None, MessageStub, T]
