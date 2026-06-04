@@ -1,10 +1,12 @@
+import functools
+import operator
 import typing
 from dataclasses import dataclass, field
-from typing import Literal, Optional, cast
+from types import UnionType
+from typing import Literal, TypeAliasType, cast
 
 from .error import AlgorithmNegotiationError
 from .messages.key_exchange import KexInitMessage
-from .public.resolve import SignatureAlgorithmName
 
 
 type KexAlgorithmName = Literal[
@@ -47,7 +49,16 @@ type MacAlgorithmName = Literal[
 type CompressionAlgorithmName = Literal['none']
 
 
-extract = lambda x: list(typing.get_args(x.__value__))
+def extract(ty):
+  match typing.get_origin(ty):
+    case typing.Literal:
+      return list(typing.get_args(ty))
+
+  match ty:
+    case TypeAliasType():
+      return extract(ty.__value__)
+    case UnionType():
+      return functools.reduce(operator.add, (extract(arg) for arg in typing.get_args(ty)))
 
 @dataclass(kw_only=True, slots=True)
 class AlgorithmSets:
@@ -106,12 +117,3 @@ class AlgorithmSelection:
   encryption_algorithm_server_to_client: EncryptionAlgorithmName
   mac_algorithm_client_to_server: MacAlgorithmName
   mac_algorithm_server_to_client: MacAlgorithmName
-
-
-@dataclass(kw_only=True, slots=True)
-class ClientExtensions:
-  pass
-
-@dataclass(kw_only=True, slots=True)
-class ServerExtensions:
-  signature_algorithms: Optional[list[SignatureAlgorithmName]] = None

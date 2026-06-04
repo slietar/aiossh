@@ -13,7 +13,7 @@ from typing import Optional
 import aiodrive
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 
-from .algorithms import AlgorithmSelection, AlgorithmSets
+from .algorithms import AlgorithmSelection, AlgorithmSets, extract
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
 from .error import (
@@ -36,6 +36,7 @@ from .messages.core import (
 from .messages.key_exchange import KexInitMessage
 from .packet import encode_packet
 from .public.base import PrivateKey
+from .public.resolve import SignatureAlgorithmName
 from .public.rsa import RSAPrivateKey
 from .structures.primitives import encode_mpint, encode_name_list, encode_string
 
@@ -322,6 +323,11 @@ class SansIOConnection:
           self._key_exchange.send(message_stub)
         except StopIteration:
           pass
+      case ExtInfoMessage.id:
+        if self._encryption_in is None:
+          raise ProtocolError
+
+        _ext_info = message_stub.decode(ExtInfoMessage)
       case _:
         raise NotImplementedError(f'Unsupported message id {message_stub.id}')
 
@@ -456,11 +462,7 @@ class SansIOConnection:
     if is_first:
       self._send_message(
         ExtInfoMessage(extensions={
-          'server-sig-algs': encode_name_list([
-            'rsa-sha2-256',
-            'rsa-sha2-512',
-            # TODO: List all supported algorithms
-          ]),
+          'server-sig-algs': encode_name_list(extract(SignatureAlgorithmName)),
         }),
       )
 

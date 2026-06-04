@@ -63,6 +63,8 @@ class NewKeysMessage(AutoCodableMessage):
   id: ClassVar[int] = 21
 
 
+# See: RFC 8308 Section 2.3
+
 @dataclass(kw_only=True, slots=True)
 class ExtInfoMessage(Message):
   id: ClassVar[int] = 7
