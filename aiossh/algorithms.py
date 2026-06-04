@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional, cast
 
 from .error import AlgorithmNegotiationError
-from .messages.kex_init import KexInitMessage
+from .messages.key_exchange import KexInitMessage
 from .public.resolve import SignatureAlgorithmName
 
 

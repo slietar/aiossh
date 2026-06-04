@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives.asymmetric import dh
 
 from ..error import ProtocolError
 from ..flow import MessageFlow
-from ..messages.kex_dh_gex import (
+from ..messages.key_exchange import (
   KexDhGexGroupMessage,
   KexDhGexInitMessage,
   KexDhGexReplyMessage,

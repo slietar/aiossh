@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import aiodrive
+from cryptography.hazmat.primitives.constant_time import bytes_eq
 
 from .algorithms import AlgorithmSelection, AlgorithmSets
 from .encryption.base import Encryption
@@ -32,7 +33,7 @@ from .messages.core import (
   ExtInfoMessage,
   NewKeysMessage,
 )
-from .messages.kex_init import KexInitMessage
+from .messages.key_exchange import KexInitMessage
 from .packet import encode_packet
 from .public.base import PrivateKey
 from .public.rsa import RSAPrivateKey
@@ -290,7 +291,7 @@ class SansIOConnection:
         self._integrity_verification_in.update(packet_with_length)
         produced_digest = self._integrity_verification_in.digest()
 
-        if digest != produced_digest:
+        if not bytes_eq(digest, produced_digest):
           raise IntegrityVerificationError
 
 

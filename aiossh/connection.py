@@ -58,7 +58,7 @@ from .messages.core import (
   NewKeysMessage,
   UnimplementedMessage,
 )
-from .messages.kex_init import KexInitMessage
+from .messages.key_exchange import KexInitMessage
 from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
 from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
