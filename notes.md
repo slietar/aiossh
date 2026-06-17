@@ -32,6 +32,49 @@ Public keys
   - ssh-ed25519
 
 
+## Sans-IO rewrite
+
+```py
+connection = Connection()
+
+while True:
+  in_data = await socket.read()
+  out_data, events = connection.advance(in_data)
+  await socket.write(out_data)
+
+  for event in events:
+    match event:
+      case AuthenticationRequestEvent():
+        out_data, new_events = event.ok()
+        await socket.write(out_data)
+        events += new_events
+      case InitializeEvent():
+        out_data, new_events = event.ok()
+        await socket.write(out_data)
+        events += new_events
+      case ErrorEvent():
+        break outer
+
+while True:
+  in_data = await socket.read()
+  out_data, events = connection.advance(in_data)
+  await socket.write(out_data)
+
+  for event in connection.events:
+    match event:
+      case AuthenticationRequestEvent():
+        event.ok()
+      case InitializeEvent():
+        event.ok()
+      case ErrorEvent():
+        break outer
+      case SendDataEvent():
+        await socket.write(event.data)
+
+  # Loop ends where more data is needed
+```
+
+
 
 ## References
 
@@ -71,6 +114,11 @@ Public keys
   <br>Secure Shell (SSH) Key Exchange Method Using Curve25519 and Curve448
 - [draft-miller-secsh-umac-01](https://datatracker.ietf.org/doc/html/draft-miller-secsh-umac-01.html)
   <br>The use of UMAC in the SSH Transport Layer Protocol
+- [draft-ietf-sshm-strict-kex-01](https://www.ietf.org/archive/id/draft-ietf-sshm-strict-kex-01.html)
+  <br>SSH Strict KEX extension
+
+Other:
 
 - [SSH implementation comparison](https://ssh-comparison.quendi.de/comparison/mac.html)
 - [OpenSSH extensions](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL)
+- [Writing I/O-Free (Sans-I/O) Protocol Implementations](https://sans-io.readthedocs.io/how-to-sans-io.html)

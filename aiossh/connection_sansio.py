@@ -13,6 +13,8 @@ from typing import Optional
 import aiodrive
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 
+from .messages.user_auth import UserAuthRequestMessage
+
 from .algorithms import AlgorithmSelection, AlgorithmSets, extract
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
@@ -34,6 +36,7 @@ from .messages.core import (
   NewKeysMessage,
 )
 from .messages.key_exchange import KexInitMessage
+from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
 from .packet import encode_packet
 from .public.base import PrivateKey
 from .public.resolve import SignatureAlgorithmName
@@ -328,6 +331,32 @@ class SansIOConnection:
           raise ProtocolError
 
         _ext_info = message_stub.decode(ExtInfoMessage)
+      case ServiceRequestMessage.id:
+        if self._encryption_in is None:
+          raise ProtocolError
+
+        message = message_stub.decode(ServiceRequestMessage)
+
+        match message.service_name:
+          case 'ssh-userauth':
+            self._send_message(
+              ServiceAcceptMessage(service_name=message.service_name),
+            )
+          case _:
+            self._send_message(DisconnectMessage(
+              reason_code=DisconnectReason.ServiceNotAvailable,
+              description='Service not available',
+              language_tag='',
+            ))
+
+            self._terminated = True
+            return
+      case UserAuthRequestMessage.id:
+        if self._encryption_in is None:
+          raise ProtocolError
+
+        message = message_stub.decode(UserAuthRequestMessage)
+        __import__('pprint').pprint(message)
       case _:
         raise NotImplementedError(f'Unsupported message id {message_stub.id}')
 
