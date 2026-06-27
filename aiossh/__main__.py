@@ -14,9 +14,10 @@ from .events import (
   AuthWithPublicKeyRequestEvent,
   ChannelDataEvent,
   ChannelEofEvent,
-  DataEvent,
   ChannelOpenEvent,
+  DataEvent,
   SessionExecEvent,
+  SessionShellEvent,
 )
 from .public.base import PrivateKey
 from .public.rsa import RSAPrivateKey
@@ -70,12 +71,10 @@ async def main():
             case DataEvent(chunk):
               tcp_connection.writer.write(chunk)
               await tcp_connection.writer.drain()
-            case AuthWithPasswordRequestEvent(user_name=user_name, password=password, respond=respond):
-              print(f'Auth with password request for user "{user_name}" with password "{password}"')
-              respond(True)
-            case AuthWithPublicKeyRequestEvent(user_name=user_name, algorithm=algorithm, public_key=public_key, authenticating=authenticating, respond=respond):
-              print(f'Auth with public key request for user "{user_name}" with algorithm "{algorithm}" and public key "{public_key.hex()}" (authenticating={authenticating})')
-              respond(True)
+            case AuthWithPasswordRequestEvent():
+              event.respond(True)
+            case AuthWithPublicKeyRequestEvent():
+              event.respond(True)
             case ChannelOpenEvent():
               channel_id = event.accept()
               print(f'Accepted open channel request with channel id {channel_id}')
@@ -90,19 +89,31 @@ async def main():
             case ChannelEofEvent(channel_id=channel_id):
               assert stream is not None
               stream.exit(7)
+            case SessionShellEvent():
+              stream = event.accept()
             case _:
               print('Event:', event)
 
 
-        # LOGGER.debug('Waiting for data...')
-        chunk = await tcp_connection.reader.read(65_536)
+        try:
+          chunk = await tcp_connection.reader.read(65_536)
+        except:
+          conn.close()
+
+          for event in conn.events():
+            match event:
+              case DataEvent(chunk):
+                tcp_connection.writer.write(chunk)
+                await tcp_connection.writer.drain()
+
+          raise
 
         if not chunk:
           break
 
         conn.feed(chunk)
       except ConnectionTerminatedError:
-        LOGGER.debug('Connection terminated')
+        LOGGER.debug('Connection terminated error')
         break
 
 

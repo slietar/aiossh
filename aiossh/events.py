@@ -65,6 +65,11 @@ class SessionExecEvent:
   accept: Callable[[], Stream]
   reject: Callable[[], None]
 
+@dataclass(slots=True)
+class SessionShellEvent:
+  accept: Callable[[], Stream]
+  reject: Callable[[], None]
+
 
 @dataclass(slots=True)
 class Stream:
@@ -82,4 +87,5 @@ type Event = (
     | ChannelDataEvent
     | SessionSetEnvEvent
     | SessionExecEvent
+    | SessionShellEvent
 )

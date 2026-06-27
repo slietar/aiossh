@@ -2,10 +2,9 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Annotated, ClassVar
 
-from .channel_request import ChannelRequestMessage
-
 from ..encoding import AutoCodable, UnionAnnotation
 from .base import AutoCodableMessage
+from .channel_request import ChannelRequestMessage
 from .types import LanguageTag
 
 

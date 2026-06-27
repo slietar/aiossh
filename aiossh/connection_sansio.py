@@ -29,6 +29,7 @@ from .events import (
   Event,
   ExchangedKeysEvent,
   SessionExecEvent,
+  SessionShellEvent,
   Stream,
 )
 from .flow import MessageFlow, MessageStub
@@ -52,6 +53,7 @@ from .messages.channel_request import (
   ChannelFailureMessage,
   ChannelRequestDetailsExec,
   ChannelRequestDetailsExitStatus,
+  ChannelRequestDetailsShell,
   ChannelRequestMessage,
   ChannelSuccessMessage,
 )
@@ -200,7 +202,21 @@ class SansIOConnection:
       self._send_message(message)
 
 
+  def close(self):
+    if self._terminated:
+      raise ConnectionTerminatedError
+
+    LOGGER.debug('Disconnected by server')
+
+    self._disconnect(
+      DisconnectReason.ByApplication,
+      'Connection closed by application',
+    )
+
   def trigger_key_exchange(self):
+    if self._terminated:
+      raise ConnectionTerminatedError
+
     if self._client_ident_string is None:
       raise RuntimeError('Key exchange cannot be run before the client identification string is received')
 
@@ -212,8 +228,8 @@ class SansIOConnection:
 
 
   def events(self) -> Iterator[Event]:
-    if self._terminated:
-      raise ConnectionTerminatedError
+    # Not checking whether terminated in order to send DisconnectMessage to the
+    # client
 
     while True:
       if self._send_buffer:
@@ -628,7 +644,7 @@ class SansIOConnection:
 
         case ChannelRequestMessage():
           match message.details:
-            case ChannelRequestDetailsExec(command=command):
+            case ChannelRequestDetailsExec() | ChannelRequestDetailsShell():
               def exit(exit_status: int):
                 if channel.dead:
                   return
@@ -685,9 +701,22 @@ class SansIOConnection:
 
                 channel.busy = False
 
-              self._events.append(
-                SessionExecEvent(command, accept, reject),
-              )
+              match message.details:
+                case ChannelRequestDetailsExec(details=details):
+                  event = SessionExecEvent(
+                    command=details.command,
+                    accept=accept,
+                    reject=reject,
+                  )
+                case ChannelRequestDetailsShell():
+                  event = SessionShellEvent(
+                    accept=accept,
+                    reject=reject,
+                  )
+                case _:
+                  raise UnreachableError
+
+              self._events.append(event)
 
               channel.busy = True
 
@@ -696,7 +725,6 @@ class SansIOConnection:
           # raise UnreachableError
 
           raise NotImplementedError
-
 
 
   def _run_key_exchange(self) -> MessageFlow[None]:
