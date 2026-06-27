@@ -1,6 +1,5 @@
 from collections.abc import Generator
 from dataclasses import dataclass
-from typing import Optional
 
 from .error import ProtocolError
 from .messages.base import Message

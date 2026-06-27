@@ -1,17 +1,13 @@
-import asyncio
 import copy
 import functools
 import logging
 import operator
-import os
-import signal
 import struct
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Optional
 
-import aiodrive
 from cryptography.hazmat.primitives.constant_time import bytes_eq
 
 from .algorithms import AlgorithmSelection, AlgorithmSets, extract
@@ -19,17 +15,19 @@ from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
 from .error import (
   ConnectionTerminatedError,
-  IntegrityVerificationError,
   ProtocolError,
   ProtocolVersionNotSupportedError,
+  UnreachableError,
 )
 from .events import (
   AuthWithPasswordRequestEvent,
   AuthWithPublicKeyRequestEvent,
+  ChannelDataEvent,
+  ChannelEofEvent,
+  ChannelOpenEvent,
   DataEvent,
   Event,
   ExchangedKeysEvent,
-  OpenChannelEvent,
   SessionExecEvent,
   Stream,
 )
@@ -42,11 +40,13 @@ from .messages.base import Message
 from .messages.channel import (
   ChannelCloseMessage,
   ChannelDataMessage,
+  ChannelEofMessage,
   ChannelOpenConfirmationMessage,
   ChannelOpenDetailsSession,
   ChannelOpenFailureMessage,
   ChannelOpenFailureReason,
   ChannelOpenMessage,
+  OpenChannelMessage,
 )
 from .messages.channel_request import (
   ChannelFailureMessage,
@@ -75,7 +75,6 @@ from .messages.user_auth import (
 from .packet import encode_packet
 from .public.base import PrivateKey
 from .public.resolve import SignatureAlgorithmName
-from .public.rsa import RSAPrivateKey
 from .structures.primitives import encode_mpint, encode_name_list, encode_string
 
 
@@ -92,7 +91,15 @@ class SansIOConnectionSettings:
 
 @dataclass(kw_only=True, slots=True)
 class Channel:
+  # True if we have received a request and are waiting for the consumer to act
+  # accordingly
+  busy: bool = False
+  queued_messages: deque[OpenChannelMessage] = field(default_factory=deque)
+
+  # True if we have sent a SSH_MSG_CHANNEL_CLOSE and are waiting for the remote
+  # side to send a SSH_MSG_CHANNEL_CLOSE
   dead: bool = False
+
   inner: SessionInnerChannel
   remote_id: int
 
@@ -121,6 +128,9 @@ class SansIOConnection:
 
   _key_exchange: Optional[MessageFlow[None]] = field(default=None, init=False)
 
+  # Queue of messages that cannot be sent to due to an ongoing key exchange
+  _queued_messages: list[Message] = field(default_factory=list, init=False)
+
   _algorithm_selection: Optional[AlgorithmSelection] = field(default=None, init=False)
   _encryption_in: Optional[Encryption] = field(default=None, init=False)
   _encryption_out: Optional[Encryption] = field(default=None, init=False)
@@ -134,6 +144,7 @@ class SansIOConnection:
   _received_partial_packet: Optional[bytes] = field(default=None, init=False)
 
   _channels: dict[int, Channel] = field(default_factory=dict, init=False)
+  _next_channel_id: int = field(default=0, init=False)
 
   def __post_init__(self):
     self._server_ident_string = IdentString(
@@ -182,6 +193,23 @@ class SansIOConnection:
     # Return payload because the KexInit message payload is reused for key exchange
     return payload
 
+  def _send_or_queue_message(self, message: Message):
+    if self._key_exchange is not None:
+      self._queued_messages.append(message)
+    else:
+      self._send_message(message)
+
+
+  def trigger_key_exchange(self):
+    if self._client_ident_string is None:
+      raise RuntimeError('Key exchange cannot be run before the client identification string is received')
+
+    if self._key_exchange is not None:
+      return
+
+    self._key_exchange = iter(self._run_key_exchange())
+    next(self._key_exchange)
+
 
   def events(self) -> Iterator[Event]:
     if self._terminated:
@@ -222,15 +250,11 @@ class SansIOConnection:
         # `client_ident_string_unterminated` already excludes CRLF.
         self._client_ident_string = IdentString.decode(client_ident_string_unterminated)
       except ProtocolVersionNotSupportedError:
-        self._send_message(
-          DisconnectMessage(
-            reason_code=DisconnectReason.ProtocolVersionNotSupported,
-            description='Protocol version not supported',
-            language_tag='',
-          ),
+        self._disconnect(
+          DisconnectReason.ProtocolVersionNotSupported,
+          'Protocol version not supported',
         )
 
-        self._terminated = True
         return
 
       LOGGER.debug(f'Client version: "{self._client_ident_string.software_version}"')
@@ -325,7 +349,12 @@ class SansIOConnection:
         produced_digest = self._integrity_verification_in.digest()
 
         if not bytes_eq(digest, produced_digest):
-          raise IntegrityVerificationError
+          self._disconnect(
+            DisconnectReason.MacError,
+            'MAC error',
+          )
+
+          return
 
 
       # Return payload
@@ -464,8 +493,30 @@ class SansIOConnection:
 
           message = message_stub.decode(ChannelOpenMessage)
 
-          def accept(channel_id: int):
-            self._send_message(
+          if message.sender_channel_id in self._channels:
+            raise ProtocolError
+
+          match message.details:
+            case ChannelOpenDetailsSession():
+              inner_channel = SessionInnerChannel()
+            case _:
+              raise NotImplementedError
+
+          channel = Channel(
+            inner=inner_channel,
+            remote_id=message.sender_channel_id,
+          )
+
+          def accept_channel_open():
+            if self._terminated:
+              raise ConnectionTerminatedError
+
+            channel_id = self._next_channel_id
+            self._next_channel_id += 1
+
+            self._channels[channel_id] = channel
+
+            self._send_or_queue_message(
               ChannelOpenConfirmationMessage(
                 recipient_channel_id=message.sender_channel_id,
                 sender_channel_id=channel_id,
@@ -474,42 +525,114 @@ class SansIOConnection:
               ),
             )
 
-            match message.details:
-              case ChannelOpenDetailsSession():
-                inner_channel = SessionInnerChannel()
-              case _:
-                raise NotImplementedError
+            return channel_id
 
-            self._channels[channel_id] = Channel(
-              inner=inner_channel,
-              remote_id=message.sender_channel_id,
+          def reject_channel_open(reason: ChannelOpenFailureReason, description: str):
+            if self._terminated:
+              raise ConnectionTerminatedError
+
+            self._send_or_queue_message(
+              ChannelOpenFailureMessage(
+                recipient_channel_id=message.sender_channel_id,
+                reason_code=reason,
+                description=description,
+                language_tag='',
+              ),
             )
 
-          def reject(reason: ChannelOpenFailureReason):
-              self._send_message(
-                ChannelOpenFailureMessage(
-                  recipient_channel_id=message.sender_channel_id,
-                  reason_code=reason,
-                  description='Administratively prohibited',
-                  language_tag='',
-                ),
-              )
+          self._events.append(
+            ChannelOpenEvent(
+              message,
+              accept=accept_channel_open,
+              reject=reject_channel_open,
+            ),
+          )
 
-          self._events.append(OpenChannelEvent(message, accept=accept, reject=reject))
-
-        case ChannelRequestMessage.id:
+        case ChannelRequestMessage.id | ChannelDataMessage.id | ChannelEofMessage.id:
           if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
             raise ProtocolError
 
-          message = message_stub.decode(ChannelRequestMessage)
+          # TODO: Allow decode() to accept and return a union
+          match message_stub.id:
+            case ChannelRequestMessage.id:
+              message = message_stub.decode(ChannelRequestMessage)
+            case ChannelDataMessage.id:
+              message = message_stub.decode(ChannelDataMessage)
+            case ChannelEofMessage.id:
+              message = message_stub.decode(ChannelEofMessage)
+            case _:
+              raise UnreachableError
+
+          channel = self._channels.get(message.recipient_channel_id)
+
+          if (channel is None) or channel.dead:
+            raise ProtocolError
+
+          channel.queued_messages.append(message)
+          self._receive_channel_messages(channel)
+
+        case ChannelCloseMessage.id:
+          if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+            raise ProtocolError
+
+          message = message_stub.decode(ChannelCloseMessage)
           channel = self._channels.get(message.recipient_channel_id)
 
           if channel is None:
             raise ProtocolError
 
+          if not channel.dead:
+            self._send_message(
+              ChannelCloseMessage(
+                recipient_channel_id=channel.remote_id,
+              ),
+            )
+
+          del self._channels[message.recipient_channel_id]
+
+        case _:
+          self._disconnect(DisconnectReason.ProtocolError, f'Unsupported message id {message_stub.id}')
+
+          if self.debug:
+            raise NotImplementedError(f'Unsupported message id {message_stub.id}')
+
+    except NotImplementedError, ProtocolError:
+      self._disconnect(DisconnectReason.ProtocolError, 'Protocol error')
+
+      if self.debug:
+        raise
+
+  def _receive_channel_messages(self, channel: Channel):
+    while channel.queued_messages:
+      if channel.busy:
+        break
+
+      message = channel.queued_messages.popleft()
+      print(f'Processing queued message {message} for channel with remote id {channel.remote_id}')
+
+      match message:
+        case ChannelDataMessage():
+          self._events.append(
+            ChannelDataEvent(
+              channel_id=channel.remote_id,
+              chunk=message.data,
+            ),
+          )
+
+        case ChannelEofMessage():
+          self._events.append(
+            ChannelEofEvent(
+              channel_id=channel.remote_id,
+            ),
+          )
+
+        case ChannelRequestMessage():
           match message.details:
             case ChannelRequestDetailsExec(command=command):
               def exit(exit_status: int):
+                if channel.dead:
+                  return
+
                 self._send_message(
                   ChannelRequestMessage(
                     recipient_channel_id=channel.remote_id,
@@ -528,6 +651,9 @@ class SansIOConnection:
                 channel.dead = True
 
               def write(chunk: bytes):
+                if channel.dead:
+                  return
+
                 self._send_message(
                   ChannelDataMessage(
                     recipient_channel_id=channel.remote_id,
@@ -536,47 +662,42 @@ class SansIOConnection:
                 )
 
               def accept():
+                assert isinstance(message, ChannelRequestMessage)
+
                 if message.want_reply:
-                  self._send_message(
+                  self._send_or_queue_message(
                     ChannelSuccessMessage(
                       recipient_channel_id=channel.remote_id,
                     ),
                   )
 
+                channel.busy = False
+                self._receive_channel_messages(channel)
+
                 return Stream(exit=exit, write=write)
 
               def reject():
-                self._send_message(
+                self._send_or_queue_message(
                   ChannelFailureMessage(
                     recipient_channel_id=channel.remote_id,
                   ),
                 )
 
-              self._events.append(SessionExecEvent(command, accept, reject))
+                channel.busy = False
 
-        case ChannelCloseMessage.id:
-          if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
-            raise ProtocolError
+              self._events.append(
+                SessionExecEvent(command, accept, reject),
+              )
 
-          message = message_stub.decode(ChannelCloseMessage)
-          channel = self._channels.get(message.recipient_channel_id)
-
-          if channel is None:
-            raise ProtocolError
-
-          del self._channels[message.recipient_channel_id]
+              channel.busy = True
 
         case _:
-          self._disconnect(DisconnectReason.ProtocolError, f'Unsupported message id {message_stub.id}')
+          # typing.assert_never(message)
+          # raise UnreachableError
 
-          if self.debug:
-            raise NotImplementedError(f'Unsupported message id {message_stub.id}')
+          raise NotImplementedError
 
-    except NotImplementedError, ProtocolError:
-      self._disconnect(DisconnectReason.ProtocolError, 'Protocol error')
 
-      if self.debug:
-        raise
 
   def _run_key_exchange(self) -> MessageFlow[None]:
     assert self._key_exchange is not None
@@ -718,101 +839,9 @@ class SansIOConnection:
     self._key_exchange = None
 
 
-def get_host_keys():
-  import pickle
-  from pathlib import Path
+    # Send queued messages
 
-  host_keys_path = Path('tmp/keys.pkl')
+    for queued_message in self._queued_messages:
+      self._send_message(queued_message)
 
-  if host_keys_path.exists():
-    with host_keys_path.open('rb') as file:
-      host_keys: list[PrivateKey] = pickle.load(file)
-  else:
-    host_keys: list[PrivateKey] = [
-      RSAPrivateKey.generate(),
-    ]
-
-    host_keys_path.parent.mkdir(exist_ok=True, parents=True)
-
-    with host_keys_path.open('wb') as file:
-      pickle.dump(host_keys, file)
-
-  return host_keys
-
-
-async def main():
-  LOGGER.debug(f'Process id: {os.getpid()}')
-
-  async def tcp_handler(tcp_connection: aiodrive.Connection):
-    LOGGER.debug(f'Incoming connection from {tcp_connection.client_name} to {tcp_connection.server_name}')
-
-    conn = SansIOConnection(
-      debug=True,
-      settings=SansIOConnectionSettings(
-        host_keys=get_host_keys(),
-        software_version='aiossh_0.0.0',
-        supported_auth_methods=['publickey'],
-      ),
-    )
-
-    while True:
-      # LOGGER.debug('Enumerating events...')
-
-      try:
-        for event in conn.events():
-          match event:
-            case DataEvent(chunk):
-              tcp_connection.writer.write(chunk)
-              await tcp_connection.writer.drain()
-            case AuthWithPasswordRequestEvent(user_name=user_name, password=password, respond=respond):
-              print(f'Auth with password request for user "{user_name}" with password "{password}"')
-              respond(True)
-            case AuthWithPublicKeyRequestEvent(user_name=user_name, algorithm=algorithm, public_key=public_key, authenticating=authenticating, respond=respond):
-              print(f'Auth with public key request for user "{user_name}" with algorithm "{algorithm}" and public key "{public_key.hex()}" (authenticating={authenticating})')
-              respond(True)
-            case OpenChannelEvent():
-              event.accept(56)
-            case SessionExecEvent(command=command):
-              print(f'Session exec request with command "{command}"')
-              stream = event.accept()
-              stream.write(b'Hello, world!\n')
-              stream.exit(7)
-            case _:
-              print('Event:', event)
-
-
-        # LOGGER.debug('Waiting for data...')
-        chunk = await tcp_connection.reader.read(65_536)
-
-        if not chunk:
-          break
-
-        conn.feed(chunk)
-      except ConnectionTerminatedError:
-        LOGGER.debug('Connection terminated')
-        break
-
-
-  try:
-    with aiodrive.handle_signal([signal.SIGINT, signal.SIGTERM]):
-      async with aiodrive.TCPServer.listen(
-        tcp_handler,
-        host=['127.0.0.1', '::1'],
-        port=1302,
-      ) as tcp_server:
-        for binding in tcp_server.bindings:
-          LOGGER.info(f'Listening on {binding}')
-
-        await aiodrive.wait_forever()
-  except aiodrive.SignalHandledException as e:
-    print('\r', end='')
-    LOGGER.info(f'Received {signal.Signals(e.signal).name}')
-
-
-if __name__ == '__main__':
-  logging.basicConfig(
-    format='[%(levelname)s] %(name)s    %(message)s',
-    level=logging.DEBUG,
-  )
-
-  asyncio.run(main())
+    self._queued_messages.clear()

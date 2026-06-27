@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Annotated, ClassVar
 
+from .channel_request import ChannelRequestMessage
+
 from ..encoding import AutoCodable, UnionAnnotation
 from .base import AutoCodableMessage
 from .types import LanguageTag
@@ -144,3 +146,14 @@ class ChannelCloseMessage(AutoCodableMessage):
   id: ClassVar[int] = 97
 
   recipient_channel_id: int
+
+
+type OpenChannelMessage = (
+    ChannelRequestMessage
+  | ChannelOpenConfirmationMessage
+  | ChannelOpenFailureMessage
+  | ChannelDataMessage
+  | ChannelExtendedDataMessage
+  | ChannelEofMessage
+  | ChannelCloseMessage
+)

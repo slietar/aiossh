@@ -29,19 +29,29 @@ class ExchangedKeysEvent:
 
 
 class OpenChannelEventAccept(Protocol):
-  def __call__(self, channel_id: int):
+  def __call__(self) -> int:
     ...
 
 class OpenChannelEventReject(Protocol):
-  def __call__(self, reason: ChannelOpenFailureReason):
+  def __call__(self, reason: ChannelOpenFailureReason, description: str) -> None:
     ...
 
 @dataclass(slots=True)
-class OpenChannelEvent:
+class ChannelOpenEvent:
   message: ChannelOpenMessage
 
   accept: OpenChannelEventAccept
   reject: OpenChannelEventReject
+
+
+@dataclass(slots=True)
+class ChannelDataEvent:
+  channel_id: int
+  chunk: bytes
+
+@dataclass(slots=True)
+class ChannelEofEvent:
+  channel_id: int
 
 
 @dataclass(slots=True)
@@ -67,7 +77,9 @@ type Event = (
     | AuthWithPublicKeyRequestEvent
     | DataEvent
     | ExchangedKeysEvent
-    | OpenChannelEvent
+    | ChannelEofEvent
+    | ChannelOpenEvent
+    | ChannelDataEvent
     | SessionSetEnvEvent
     | SessionExecEvent
 )
