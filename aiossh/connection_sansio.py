@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import functools
 import logging
 import operator
@@ -34,6 +35,8 @@ from .messages.core import (
   NewKeysMessage,
 )
 from .messages.key_exchange import KexInitMessage
+from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
+from .messages.user_auth import UserAuthRequestMessage
 from .packet import encode_packet
 from .public.base import PrivateKey
 from .public.resolve import SignatureAlgorithmName
@@ -328,6 +331,32 @@ class SansIOConnection:
           raise ProtocolError
 
         _ext_info = message_stub.decode(ExtInfoMessage)
+      case ServiceRequestMessage.id:
+        if self._encryption_in is None:
+          raise ProtocolError
+
+        message = message_stub.decode(ServiceRequestMessage)
+
+        match message.service_name:
+          case 'ssh-userauth':
+            self._send_message(
+              ServiceAcceptMessage(service_name=message.service_name),
+            )
+          case _:
+            self._send_message(DisconnectMessage(
+              reason_code=DisconnectReason.ServiceNotAvailable,
+              description='Service not available',
+              language_tag='',
+            ))
+
+            self._terminated = True
+            return
+      case UserAuthRequestMessage.id:
+        if self._encryption_in is None:
+          raise ProtocolError
+
+        message = message_stub.decode(UserAuthRequestMessage)
+        __import__('pprint').pprint(message)
       case _:
         raise NotImplementedError(f'Unsupported message id {message_stub.id}')
 
@@ -337,20 +366,21 @@ class SansIOConnection:
     is_first = self._session_id is None
 
     usable_server_host_key_algorithms = functools.reduce(operator.or_, (key.algorithms() for key in self.settings.host_keys), set())
-    server_host_key_algorithms = [
+    server_supported_algorithms = copy.deepcopy(self.settings.supported_algorithms)
+    server_supported_algorithms.server_host_key_algorithms = [
       algorithm for algorithm in self.settings.supported_algorithms.server_host_key_algorithms if algorithm in usable_server_host_key_algorithms
     ]
 
     server_kex_init_payload = self._send_message(
       KexInitMessage(
-        kex_algorithms=(self.settings.supported_algorithms.kex_algorithms + (['ext-info-s'] if is_first else [])),
-        server_host_key_algorithms=list(server_host_key_algorithms),
-        encryption_algorithms_client_to_server=list(self.settings.supported_algorithms.encryption_algorithms_client_to_server),
-        encryption_algorithms_server_to_client=list(self.settings.supported_algorithms.encryption_algorithms_server_to_client),
-        mac_algorithms_client_to_server=list(self.settings.supported_algorithms.mac_algorithms_client_to_server),
-        mac_algorithms_server_to_client=list(self.settings.supported_algorithms.mac_algorithms_server_to_client),
-        compression_algorithms_client_to_server=list(self.settings.supported_algorithms.compression_algorithms_client_to_server),
-        compression_algorithms_server_to_client=list(self.settings.supported_algorithms.compression_algorithms_server_to_client),
+        kex_algorithms=(server_supported_algorithms.kex_algorithms + (['ext-info-s'] if is_first else [])),
+        server_host_key_algorithms=list(server_supported_algorithms.server_host_key_algorithms),
+        encryption_algorithms_client_to_server=list(server_supported_algorithms.encryption_algorithms_client_to_server),
+        encryption_algorithms_server_to_client=list(server_supported_algorithms.encryption_algorithms_server_to_client),
+        mac_algorithms_client_to_server=list(server_supported_algorithms.mac_algorithms_client_to_server),
+        mac_algorithms_server_to_client=list(server_supported_algorithms.mac_algorithms_server_to_client),
+        compression_algorithms_client_to_server=list(server_supported_algorithms.compression_algorithms_client_to_server),
+        compression_algorithms_server_to_client=list(server_supported_algorithms.compression_algorithms_server_to_client),
         languages_client_to_server=[],
         languages_server_to_client=[],
         first_kex_packet_follows=False,
@@ -364,7 +394,7 @@ class SansIOConnection:
 
     # Negotiate algorithms
 
-    algorithm_selection = self.settings.supported_algorithms.negotiate(client_kex_init)
+    algorithm_selection = server_supported_algorithms.negotiate(client_kex_init)
     host_key = next(key for key in self.settings.host_keys if algorithm_selection.server_host_key_algorithm in key.algorithms())
 
 
