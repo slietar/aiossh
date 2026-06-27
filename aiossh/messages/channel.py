@@ -2,9 +2,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Annotated, ClassVar
 
-from ..encoding import Codable, UnionAnnotation
-from ..structures.primitives import encode_name, encode_uint32
-from .base import Message
+from ..encoding import AutoCodable, UnionAnnotation
+from .base import AutoCodableMessage
 from .types import LanguageTag
 
 
@@ -16,14 +15,14 @@ from .types import LanguageTag
 # Section 6.1
 
 @dataclass(kw_only=True, slots=True)
-class ChannelOpenDetailsSession(Codable):
+class ChannelOpenDetailsSession(AutoCodable):
   key: ClassVar[str] = 'session'
 
 
 # Section 7.2
 
 @dataclass(kw_only=True, slots=True)
-class ChannelOpenDetailsDirectTCPIP(Codable):
+class ChannelOpenDetailsDirectTcpIp(AutoCodable):
   key: ClassVar[str] = 'direct-tcpip'
 
   recipient_address: str
@@ -35,7 +34,7 @@ class ChannelOpenDetailsDirectTCPIP(Codable):
 # Section 7.2
 
 @dataclass(kw_only=True, slots=True)
-class ChannelOpenDetailsForwardedTcpIP(Codable):
+class ChannelOpenDetailsForwardedTcpIP(AutoCodable):
   key: ClassVar[str] = 'forwarded-tcpip'
 
   recipient_address: str
@@ -47,7 +46,7 @@ class ChannelOpenDetailsForwardedTcpIP(Codable):
 # Section 6.3.2
 
 @dataclass(kw_only=True, slots=True)
-class ChannelOpenDetailsX11(Codable):
+class ChannelOpenDetailsX11(AutoCodable):
   key: ClassVar[str] = 'x11'
 
   originator_address: str
@@ -55,7 +54,7 @@ class ChannelOpenDetailsX11(Codable):
 
 
 type ChannelOpenDetails = (
-    ChannelOpenDetailsDirectTCPIP
+    ChannelOpenDetailsDirectTcpIp
   | ChannelOpenDetailsForwardedTcpIP
   | ChannelOpenDetailsSession
   | ChannelOpenDetailsX11
@@ -67,7 +66,7 @@ type ChannelOpenDetails = (
 # Section 5.1
 
 @dataclass(kw_only=True, slots=True)
-class ChannelOpenMessage(Codable, Message):
+class ChannelOpenMessage(AutoCodableMessage):
   id: ClassVar[int] = 90
 
   type: str
@@ -79,7 +78,7 @@ class ChannelOpenMessage(Codable, Message):
 
 
 @dataclass(slots=True)
-class ChannelOpenConfirmationMessage(Codable, Message):
+class ChannelOpenConfirmationMessage(AutoCodableMessage):
   id: ClassVar[int] = 91
 
   recipient_channel_id: int
@@ -97,7 +96,7 @@ class ChannelOpenFailureReason(IntEnum):
   ResourceShortage = 4
 
 @dataclass(kw_only=True, slots=True)
-class ChannelOpenFailureMessage(Codable, Message):
+class ChannelOpenFailureMessage(AutoCodableMessage):
   id: ClassVar[int] = 92
 
   recipient_channel_id: int
@@ -112,14 +111,14 @@ class DataTypeCode(IntEnum):
   Stderr = 1
 
 @dataclass(kw_only=True, slots=True)
-class ChannelDataMessage(Codable, Message):
+class ChannelDataMessage(AutoCodableMessage):
   id: ClassVar[int] = 94
 
   recipient_channel_id: int
   data: bytes
 
 @dataclass(kw_only=True, slots=True)
-class ChannelExtendedDataMessage(Codable, Message):
+class ChannelExtendedDataMessage(AutoCodableMessage):
   id: ClassVar[int] = 95
 
   recipient_channel_id: int
@@ -130,7 +129,7 @@ class ChannelExtendedDataMessage(Codable, Message):
 ## EOF message
 
 @dataclass(kw_only=True, slots=True)
-class ChannelEofMessage(Codable, Message):
+class ChannelEofMessage(AutoCodableMessage):
   id: ClassVar[int] = 96
 
   recipient_channel_id: int
@@ -141,7 +140,7 @@ class ChannelEofMessage(Codable, Message):
 # Section 5.3
 
 @dataclass(kw_only=True, slots=True)
-class ChannelCloseMessage(Codable, Message):
+class ChannelCloseMessage(AutoCodableMessage):
   id: ClassVar[int] = 97
 
   recipient_channel_id: int

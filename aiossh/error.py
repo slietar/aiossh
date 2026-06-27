@@ -15,3 +15,7 @@ class ProtocolVersionNotSupportedError(Exception):
 
 class UnreachableError(Exception):
   pass
+
+
+class ConnectionTerminatedError(Exception):
+  pass

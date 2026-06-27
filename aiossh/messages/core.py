@@ -37,7 +37,7 @@ class DisconnectReason(IntEnum):
 class DisconnectMessage(AutoCodableMessage):
   id: ClassVar[int] = 1
 
-  reason_code: int
+  reason_code: int # TODO: Use and validate DisconnectReason instead of int
   description: str
   language_tag: LanguageTag
 

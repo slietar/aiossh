@@ -7,7 +7,7 @@ import os
 import signal
 import struct
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -18,9 +18,20 @@ from .algorithms import AlgorithmSelection, AlgorithmSets, extract
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
 from .error import (
+  ConnectionTerminatedError,
   IntegrityVerificationError,
   ProtocolError,
   ProtocolVersionNotSupportedError,
+)
+from .events import (
+  AuthWithPasswordRequestEvent,
+  AuthWithPublicKeyRequestEvent,
+  DataEvent,
+  Event,
+  ExchangedKeysEvent,
+  OpenChannelEvent,
+  SessionExecEvent,
+  Stream,
 )
 from .flow import MessageFlow, MessageStub
 from .ident_string import IdentString
@@ -28,6 +39,22 @@ from .integrity.base import IntegrityVerification
 from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import Message
+from .messages.channel import (
+  ChannelCloseMessage,
+  ChannelDataMessage,
+  ChannelOpenConfirmationMessage,
+  ChannelOpenDetailsSession,
+  ChannelOpenFailureMessage,
+  ChannelOpenFailureReason,
+  ChannelOpenMessage,
+)
+from .messages.channel_request import (
+  ChannelFailureMessage,
+  ChannelRequestDetailsExec,
+  ChannelRequestDetailsExitStatus,
+  ChannelRequestMessage,
+  ChannelSuccessMessage,
+)
 from .messages.core import (
   DisconnectMessage,
   DisconnectReason,
@@ -55,37 +82,23 @@ from .structures.primitives import encode_mpint, encode_name_list, encode_string
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
-class AuthWithPasswordRequestEvent:
-  user_name: str
-  password: str
-  respond: Callable[[bool], None]
-
-@dataclass(slots=True)
-class AuthWithPublicKeyRequestEvent:
-  user_name: str
-  algorithm: str
-  public_key: bytes
-  authenticating: bool
-  respond: Callable[[bool], None]
-
-@dataclass(slots=True)
-class DataEvent:
-  chunk: bytes
-
-@dataclass(slots=True)
-class ExchangedKeysEvent:
-  pass
-
-type Event = AuthWithPasswordRequestEvent | AuthWithPublicKeyRequestEvent | DataEvent | ExchangedKeysEvent
-
-
 @dataclass(kw_only=True, slots=True)
 class SansIOConnectionSettings:
   host_keys: list[PrivateKey]
   software_version: str
   supported_algorithms: AlgorithmSets = field(default_factory=AlgorithmSets)
   supported_auth_methods: list[AuthenticationMethodName]
+
+
+@dataclass(kw_only=True, slots=True)
+class Channel:
+  dead: bool = False
+  inner: SessionInnerChannel
+  remote_id: int
+
+@dataclass(slots=True)
+class SessionInnerChannel:
+  pass
 
 
 @dataclass(kw_only=True)
@@ -119,6 +132,8 @@ class SansIOConnection:
   _send_buffer: bytes = field(default_factory=bytes, init=False)
   _events: deque[Event] = field(default_factory=deque, init=False)
   _received_partial_packet: Optional[bytes] = field(default=None, init=False)
+
+  _channels: dict[int, Channel] = field(default_factory=dict, init=False)
 
   def __post_init__(self):
     self._server_ident_string = IdentString(
@@ -170,7 +185,7 @@ class SansIOConnection:
 
   def events(self) -> Iterator[Event]:
     if self._terminated:
-      raise RuntimeError('Connection is terminated')
+      raise ConnectionTerminatedError
 
     while True:
       if self._send_buffer:
@@ -183,10 +198,10 @@ class SansIOConnection:
         break
 
   def feed(self, chunk: bytes, /):
-    self._receive_buffer += chunk
-
     if self._terminated:
-      raise RuntimeError('Connection is terminated')
+      raise ConnectionTerminatedError
+
+    self._receive_buffer += chunk
 
     if self._client_ident_string is None:
       # See: RFC 4253 Section 4.2
@@ -338,12 +353,19 @@ class SansIOConnection:
 
     try:
       match message_stub.id:
+        case DisconnectMessage.id:
+          message = message_stub.decode(DisconnectMessage)
+          self._terminated = True
+
+          LOGGER.debug(f'Disconnected by client: reason={DisconnectReason(message.reason_code).name!r} description={message.description!r}')
+
         case KexInitMessage.id:
           if self._key_exchange is None:
             self._key_exchange = iter(self._run_key_exchange())
             next(self._key_exchange)
 
           self._key_exchange.send(message_stub)
+
         case _ if (message_stub.id == NewKeysMessage.id) or (30 <= message_stub.id <= 49):
           if self._key_exchange is None:
             raise ProtocolError
@@ -352,11 +374,13 @@ class SansIOConnection:
             self._key_exchange.send(message_stub)
           except StopIteration:
             pass
+
         case ExtInfoMessage.id:
           if self._encryption_in is None:
             raise ProtocolError
 
           _ext_info = message_stub.decode(ExtInfoMessage)
+
         case ServiceRequestMessage.id:
           if (self._encryption_in is None) or (self._key_exchange is not None):
             raise ProtocolError
@@ -434,12 +458,121 @@ class SansIOConnection:
               partial_success=False,
             ))
 
+        case ChannelOpenMessage.id:
+          if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+            raise ProtocolError
+
+          message = message_stub.decode(ChannelOpenMessage)
+
+          def accept(channel_id: int):
+            self._send_message(
+              ChannelOpenConfirmationMessage(
+                recipient_channel_id=message.sender_channel_id,
+                sender_channel_id=channel_id,
+                window_size=message.window_size,
+                max_packet_size=message.max_packet_size,
+              ),
+            )
+
+            match message.details:
+              case ChannelOpenDetailsSession():
+                inner_channel = SessionInnerChannel()
+              case _:
+                raise NotImplementedError
+
+            self._channels[channel_id] = Channel(
+              inner=inner_channel,
+              remote_id=message.sender_channel_id,
+            )
+
+          def reject(reason: ChannelOpenFailureReason):
+              self._send_message(
+                ChannelOpenFailureMessage(
+                  recipient_channel_id=message.sender_channel_id,
+                  reason_code=reason,
+                  description='Administratively prohibited',
+                  language_tag='',
+                ),
+              )
+
+          self._events.append(OpenChannelEvent(message, accept=accept, reject=reject))
+
+        case ChannelRequestMessage.id:
+          if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+            raise ProtocolError
+
+          message = message_stub.decode(ChannelRequestMessage)
+          channel = self._channels.get(message.recipient_channel_id)
+
+          if channel is None:
+            raise ProtocolError
+
+          match message.details:
+            case ChannelRequestDetailsExec(command=command):
+              def exit(exit_status: int):
+                self._send_message(
+                  ChannelRequestMessage(
+                    recipient_channel_id=channel.remote_id,
+                    request_type='exit-status',
+                    want_reply=False,
+                    details=ChannelRequestDetailsExitStatus(exit_status=exit_status),
+                  ),
+                )
+
+                self._send_message(
+                  ChannelCloseMessage(
+                    recipient_channel_id=channel.remote_id,
+                  ),
+                )
+
+                channel.dead = True
+
+              def write(chunk: bytes):
+                self._send_message(
+                  ChannelDataMessage(
+                    recipient_channel_id=channel.remote_id,
+                    data=chunk,
+                  ),
+                )
+
+              def accept():
+                if message.want_reply:
+                  self._send_message(
+                    ChannelSuccessMessage(
+                      recipient_channel_id=channel.remote_id,
+                    ),
+                  )
+
+                return Stream(exit=exit, write=write)
+
+              def reject():
+                self._send_message(
+                  ChannelFailureMessage(
+                    recipient_channel_id=channel.remote_id,
+                  ),
+                )
+
+              self._events.append(SessionExecEvent(command, accept, reject))
+
+        case ChannelCloseMessage.id:
+          if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+            raise ProtocolError
+
+          message = message_stub.decode(ChannelCloseMessage)
+          channel = self._channels.get(message.recipient_channel_id)
+
+          if channel is None:
+            raise ProtocolError
+
+          del self._channels[message.recipient_channel_id]
+
         case _:
           self._disconnect(DisconnectReason.ProtocolError, f'Unsupported message id {message_stub.id}')
 
           if self.debug:
             raise NotImplementedError(f'Unsupported message id {message_stub.id}')
-    except ProtocolError:
+
+    except NotImplementedError, ProtocolError:
       self._disconnect(DisconnectReason.ProtocolError, 'Protocol error')
 
       if self.debug:
@@ -625,28 +758,39 @@ async def main():
     while True:
       # LOGGER.debug('Enumerating events...')
 
-      for event in conn.events():
-        match event:
-          case DataEvent(chunk):
-            tcp_connection.writer.write(chunk)
-            await tcp_connection.writer.drain()
-          case AuthWithPasswordRequestEvent(user_name=user_name, password=password, respond=respond):
-            print(f'Auth with password request for user "{user_name}" with password "{password}"')
-            respond(True)
-          case AuthWithPublicKeyRequestEvent(user_name=user_name, algorithm=algorithm, public_key=public_key, authenticating=authenticating, respond=respond):
-            print(f'Auth with public key request for user "{user_name}" with algorithm "{algorithm}" and public key "{public_key.hex()}" (authenticating={authenticating})')
-            respond(True)
-          case _:
-            print('Event:', event)
+      try:
+        for event in conn.events():
+          match event:
+            case DataEvent(chunk):
+              tcp_connection.writer.write(chunk)
+              await tcp_connection.writer.drain()
+            case AuthWithPasswordRequestEvent(user_name=user_name, password=password, respond=respond):
+              print(f'Auth with password request for user "{user_name}" with password "{password}"')
+              respond(True)
+            case AuthWithPublicKeyRequestEvent(user_name=user_name, algorithm=algorithm, public_key=public_key, authenticating=authenticating, respond=respond):
+              print(f'Auth with public key request for user "{user_name}" with algorithm "{algorithm}" and public key "{public_key.hex()}" (authenticating={authenticating})')
+              respond(True)
+            case OpenChannelEvent():
+              event.accept(56)
+            case SessionExecEvent(command=command):
+              print(f'Session exec request with command "{command}"')
+              stream = event.accept()
+              stream.write(b'Hello, world!\n')
+              stream.exit(7)
+            case _:
+              print('Event:', event)
 
 
-      # LOGGER.debug('Waiting for data...')
-      chunk = await tcp_connection.reader.read(65_536)
+        # LOGGER.debug('Waiting for data...')
+        chunk = await tcp_connection.reader.read(65_536)
 
-      if not chunk:
+        if not chunk:
+          break
+
+        conn.feed(chunk)
+      except ConnectionTerminatedError:
+        LOGGER.debug('Connection terminated')
         break
-
-      conn.feed(chunk)
 
 
   try:

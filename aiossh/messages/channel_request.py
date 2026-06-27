@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from typing import Annotated, ClassVar, Literal
 
-from ..encoding import Codable, Name, UnionAnnotation
+from ..encoding import AutoCodable, Name, UnionAnnotation
 from ..terminal_modes import TerminalModes
-from .base import EncodableMessage, Message
+from .base import AutoCodableMessage
 from .types import LanguageTag
 
 
@@ -15,7 +15,7 @@ from .types import LanguageTag
 # Section 6.4
 
 @dataclass(kw_only=True, slots=True)
-class ChannelRequestDetailsEnv(Codable):
+class ChannelRequestDetailsEnv(AutoCodable):
   key: ClassVar[str] = 'env'
 
   name: str
@@ -25,7 +25,7 @@ class ChannelRequestDetailsEnv(Codable):
 # Section 6.2
 
 @dataclass(kw_only=True, slots=True)
-class ChannelRequestDetailsPtyReq(Codable):
+class ChannelRequestDetailsPtyReq(AutoCodable):
   key: ClassVar[str] = 'pty-req'
 
   term_name: bytes
@@ -39,7 +39,7 @@ class ChannelRequestDetailsPtyReq(Codable):
 # Section 6.3
 
 @dataclass(kw_only=True, slots=True)
-class ChannelRequestDetailsX11Req(Codable):
+class ChannelRequestDetailsX11Req(AutoCodable):
   key: ClassVar[str] = 'x11-req'
 
   single_connection: bool
@@ -51,17 +51,17 @@ class ChannelRequestDetailsX11Req(Codable):
 # Section 6.5
 
 @dataclass(slots=True)
-class ChannelRequestDetailsShell(Codable):
+class ChannelRequestDetailsShell(AutoCodable):
   key: ClassVar[str] = 'shell'
 
 @dataclass(slots=True)
-class ChannelRequestDetailsExec(Codable):
+class ChannelRequestDetailsExec(AutoCodable):
   key: ClassVar[str] = 'exec'
 
   command: str
 
 @dataclass(slots=True)
-class ChannelRequestDetailsSubsystem(Codable):
+class ChannelRequestDetailsSubsystem(AutoCodable):
   key: ClassVar[str] = 'subsystem'
 
   name: bytes
@@ -70,7 +70,7 @@ class ChannelRequestDetailsSubsystem(Codable):
 # Section 6.7
 
 @dataclass(slots=True)
-class ChannelRequestDetailsWindowChange(Codable):
+class ChannelRequestDetailsWindowChange(AutoCodable):
   key: ClassVar[str] = 'window-change'
 
   term_width_chars: int
@@ -82,7 +82,7 @@ class ChannelRequestDetailsWindowChange(Codable):
 # Section 6.8
 
 @dataclass(slots=True)
-class ChannelRequestDetailsXonXoff(Codable):
+class ChannelRequestDetailsXonXoff(AutoCodable):
   key: ClassVar[str] = 'xon-xoff'
 
   # want_reply: Literal[False]
@@ -92,7 +92,7 @@ class ChannelRequestDetailsXonXoff(Codable):
 # Section 6.9
 
 @dataclass(slots=True)
-class ChannelRequestDetailsSignal(Codable):
+class ChannelRequestDetailsSignal(AutoCodable):
   key: ClassVar[str] = 'signal'
 
   # want_reply: Literal[False]
@@ -104,14 +104,14 @@ class ChannelRequestDetailsSignal(Codable):
 type SignalName = Literal['ABRT', 'ALRM', 'FPE', 'HUP', 'ILL', 'INT', 'KILL', 'PIPE', 'QUIT', 'SEGV', 'TERM', 'USR1', 'USR2']
 
 @dataclass(slots=True)
-class ChannelRequestDetailsExitStatus(Codable):
+class ChannelRequestDetailsExitStatus(AutoCodable):
   key: ClassVar[str] = 'exit-status'
 
   # want_reply: Literal[False]
   exit_status: int
 
 @dataclass(slots=True)
-class ChannelRequestDetailsExitSignal(Codable):
+class ChannelRequestDetailsExitSignal(AutoCodable):
   key: ClassVar[str] = 'exit-signal'
 
   # want_reply: Literal[False]
@@ -126,7 +126,7 @@ class ChannelRequestDetailsExitSignal(Codable):
 # Section 4
 
 @dataclass(kw_only=True, slots=True)
-class ChannelRequestMessage(Codable, Message):
+class ChannelRequestMessage(AutoCodableMessage):
   id: ClassVar[int] = 98
 
   recipient_channel_id: int
@@ -155,14 +155,14 @@ class ChannelRequestMessage(Codable, Message):
 # Section 5.4
 
 @dataclass(kw_only=True, slots=True)
-class ChannelSuccessMessage(Codable, EncodableMessage):
+class ChannelSuccessMessage(AutoCodableMessage):
   id: ClassVar[int] = 99
 
   recipient_channel_id: int
 
 
 @dataclass(kw_only=True, slots=True)
-class ChannelFailureMessage(Codable, EncodableMessage):
+class ChannelFailureMessage(AutoCodableMessage):
   id: ClassVar[int] = 100
 
   recipient_channel_id: int
