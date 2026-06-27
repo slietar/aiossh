@@ -3,6 +3,7 @@ from enum import IntEnum
 from typing import Annotated, ClassVar
 
 from ..encoding import Codable, UnionAnnotation
+from ..structures.primitives import encode_name, encode_uint32
 from .base import Message
 from .types import LanguageTag
 

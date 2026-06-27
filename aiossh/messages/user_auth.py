@@ -1,9 +1,21 @@
 from collections.abc import Collection
 from dataclasses import dataclass
-from typing import Annotated, ClassVar, Literal, Optional
+from typing import Annotated, ClassVar, Literal, Optional, override
 
-from ..encoding import AutoCodable, Name, UnionAnnotation
+from ..encoding import (
+  AutoCodable,
+  CodableABC,
+  Name,
+  NameList,
+  OptionalAnnotation,
+  UnionAnnotation,
+  get_class_encodings,
+)
 from ..structures.primitives import (
+  decode_boolean,
+  decode_name,
+  decode_string,
+  decode_text,
   encode_boolean,
   encode_name,
   encode_string,
@@ -47,13 +59,32 @@ class UserAuthRequestDetailsNone(AutoCodable):
   key: ClassVar[str] = 'none'
 
 @dataclass(kw_only=True, slots=True)
-class UserAuthRequestDetailsPublicKey(AutoCodable):
+class UserAuthRequestDetailsPublicKey(CodableABC):
   key: ClassVar[str] = 'publickey'
 
-  contains_signature: bool
   algorithm: Name
   public_key: bytes
   signature: Optional[bytes]
+
+  @override
+  def encode(self):
+    return (
+      encode_boolean(self.signature is not None)
+      + encode_name(self.algorithm)
+      + encode_string(self.public_key)
+      + (encode_string(self.signature) if self.signature is not None else b'')
+    )
+
+  @override
+  @classmethod
+  def decode(cls, reader):
+    contains_signature = decode_boolean(reader)
+
+    return cls(
+      algorithm=decode_name(reader),
+      public_key=decode_string(reader),
+      signature=(decode_string(reader) if contains_signature else None),
+    )
 
   def encode_signed(self):
     return (
@@ -67,19 +98,37 @@ class UserAuthRequestDetailsPublicKey(AutoCodable):
     )
 
 @dataclass(kw_only=True, slots=True)
-class UserAuthRequestDetailsPassword(AutoCodable):
+class UserAuthRequestDetailsPassword(CodableABC):
   key: ClassVar[str] = 'password'
 
-  contains_new_password: bool
   password: str
   new_password: Optional[str] = None
+
+  @override
+  def encode(self):
+    return (
+      encode_boolean(self.new_password is not None)
+      + encode_text(self.password)
+      + (encode_text(self.new_password) if self.new_password is not None else b'')
+    )
+
+  @override
+  @classmethod
+  def decode(cls, reader):
+    contains_new_password = decode_boolean(reader)
+
+    return cls(
+      password=decode_text(reader),
+      new_password=(decode_text(reader) if contains_new_password else None),
+    )
+
 
 
 @dataclass(kw_only=True, slots=True)
 class UserAuthFailureMessage(AutoCodableMessage):
   id: ClassVar[int] = 51
 
-  supported_methods: list[str]
+  supported_methods: NameList
   partial_success: bool = False
 
 @dataclass(kw_only=True, slots=True)

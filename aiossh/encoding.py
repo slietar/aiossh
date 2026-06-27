@@ -69,12 +69,23 @@ class FixedSizeBytesEncoding:
   size: int
 
 @dataclass(slots=True)
+class OptionalEncoding:
+  base: Encoding
+  condition_attr: str
+
+@dataclass(slots=True)
 class UnionEncoding:
   allow_none: bool
   discriminant: str
   variants: dict[Any, type[Codable]]
 
-type Encoding = Literal['boolean', 'mpint', 'name', 'name-list', 'string', 'text', 'uint32'] | CodableEncoding | FixedSizeBytesEncoding | UnionEncoding
+type Encoding = (
+  Literal['boolean', 'mpint', 'name', 'name-list', 'string', 'text', 'uint32']
+  | CodableEncoding
+  | FixedSizeBytesEncoding
+  | OptionalEncoding
+  | UnionEncoding
+)
 
 
 # Encoding annotations
@@ -86,6 +97,10 @@ class EncodingAnnotation:
 @dataclass(slots=True)
 class FixedSizeBytesAnnotation:
   size: int
+
+@dataclass(slots=True)
+class OptionalAnnotation:
+  condition_attr: str
 
 @dataclass(slots=True)
 class UnionAnnotation:
@@ -109,54 +124,55 @@ def get_class_encodings(cls):
 
   for field in dataclasses.fields(cls):
     field_type = field_types[field.name]
-    current_type = resolve_type(field_type)
-
-    if typing.get_origin(current_type) is Annotated:
-      found = False
-
-      for annotation in current_type.__metadata__:
-        match annotation:
-          case EncodingAnnotation():
-            encodings[field.name] = annotation.name
-
-          case FixedSizeBytesAnnotation(size):
-            encodings[field.name] = FixedSizeBytesEncoding(size)
-
-          case UnionAnnotation(discriminant, variant_attr):
-            args = typing.get_args(resolve_type(current_type.__origin__))
-
-            encodings[field.name] = UnionEncoding(
-              allow_none=any(arg is NoneType for arg in args),
-              discriminant=discriminant,
-              variants=({ getattr(arg, variant_attr): arg for arg in args if arg is not NoneType }),
-            )
-
-          case _:
-            continue
-
-        found = True
-        break
-      else:
-        current_type = current_type.__origin__
-
-      if found:
-        continue
-
-    match current_type:
-      case builtins.bool:
-        encodings[field.name] = 'boolean'
-      case builtins.bytes:
-        encodings[field.name] = 'string'
-      case builtins.int:
-        encodings[field.name] = 'uint32'
-      case builtins.str:
-        encodings[field.name] = 'text'
-      case _ if inspect.isclass(current_type) and issubclass(current_type, Codable):
-        encodings[field.name] = CodableEncoding(current_type) # type: ignore
-      case _:
-        raise TypeError(f'Unsupported type: {field_type!r}')
+    encodings[field.name] = get_encoding(field_type)
 
   return encodings
+
+def get_encoding(field_type) -> Encoding:
+  current_type = resolve_type(field_type)
+
+  if typing.get_origin(current_type) is Annotated:
+    for annotation in current_type.__metadata__:
+      match annotation:
+        case EncodingAnnotation():
+          return annotation.name
+        case FixedSizeBytesAnnotation(size):
+          return FixedSizeBytesEncoding(size)
+        case OptionalAnnotation(condition_attr):
+          origin = resolve_type(current_type.__origin__)
+          args = typing.get_args(origin)
+
+          assert typing.get_origin(origin) is typing.Union
+          assert len(args) == 2 and args[1] is NoneType
+
+          return OptionalEncoding(get_encoding(args[0]), condition_attr)
+        case UnionAnnotation(discriminant, variant_attr):
+          args = typing.get_args(resolve_type(current_type.__origin__))
+
+          return UnionEncoding(
+            allow_none=any(arg is NoneType for arg in args),
+            discriminant=discriminant,
+            variants=({ getattr(arg, variant_attr): arg for arg in args if arg is not NoneType }),
+          )
+        case _:
+          continue
+    else:
+      current_type = current_type.__origin__
+
+  match current_type:
+    case builtins.bool:
+      return 'boolean'
+    case builtins.bytes:
+      return 'string'
+    case builtins.int:
+      return 'uint32'
+    case builtins.str:
+      return 'text'
+    case _ if inspect.isclass(current_type) and issubclass(current_type, Codable):
+      return CodableEncoding(current_type) # type: ignore
+    case _:
+      raise TypeError(f'Unsupported type: {field_type!r}')
+
 
 
 @dataclass(slots=True)

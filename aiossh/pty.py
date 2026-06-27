@@ -77,7 +77,7 @@ class PTYSession:
       logger.info(f'Process terminated with code {e.code}')
 
       if session is not None:
-        session.code = e.code
+        session.code = e.code & 0xff
     else:
       logger.info('Process exited normally')
 

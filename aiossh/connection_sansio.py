@@ -7,7 +7,7 @@ import os
 import signal
 import struct
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -36,7 +36,15 @@ from .messages.core import (
 )
 from .messages.key_exchange import KexInitMessage
 from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
-from .messages.user_auth import UserAuthRequestMessage
+from .messages.user_auth import (
+  AuthenticationMethodName,
+  UserAuthFailureMessage,
+  UserAuthPublicKeyOk,
+  UserAuthRequestDetailsPassword,
+  UserAuthRequestDetailsPublicKey,
+  UserAuthRequestMessage,
+  UserAuthSuccessMessage,
+)
 from .packet import encode_packet
 from .public.base import PrivateKey
 from .public.resolve import SignatureAlgorithmName
@@ -48,6 +56,20 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
+class AuthWithPasswordRequestEvent:
+  user_name: str
+  password: str
+  respond: Callable[[bool], None]
+
+@dataclass(slots=True)
+class AuthWithPublicKeyRequestEvent:
+  user_name: str
+  algorithm: str
+  public_key: bytes
+  authenticating: bool
+  respond: Callable[[bool], None]
+
+@dataclass(slots=True)
 class DataEvent:
   chunk: bytes
 
@@ -55,31 +77,23 @@ class DataEvent:
 class ExchangedKeysEvent:
   pass
 
-type Event = DataEvent | ExchangedKeysEvent
+type Event = AuthWithPasswordRequestEvent | AuthWithPublicKeyRequestEvent | DataEvent | ExchangedKeysEvent
 
 
-@dataclass(slots=True)
+@dataclass(kw_only=True, slots=True)
 class SansIOConnectionSettings:
   host_keys: list[PrivateKey]
   software_version: str
   supported_algorithms: AlgorithmSets = field(default_factory=AlgorithmSets)
+  supported_auth_methods: list[AuthenticationMethodName]
 
 
-# @dataclass(slots=True)
-# class WaitingForKexInitState:
-#   pass
-
-# class RunningKeyExchangeState:
-#   pass
-
-# type State = TerminatedState | WaitingForIdentStringState
-
-
-@dataclass
+@dataclass(kw_only=True)
 class SansIOConnection:
+  debug: bool
   settings: SansIOConnectionSettings
 
-  # _state: State = field(default_factory=WaitingForIdentStringState)
+  _authenticated: bool = field(default=False, init=False)
   _terminated: bool = field(default=False, init=False)
 
   _client_ident_string: Optional[IdentString] = field(default=None, init=False)
@@ -308,57 +322,128 @@ class SansIOConnection:
 
       self._receive_message(MessageStub(payload), sequence_number)
 
+  def _disconnect(self, reason_code: DisconnectReason, description: str):
+    self._send_message(
+      DisconnectMessage(
+        reason_code=reason_code,
+        description=description,
+        language_tag='',
+      ),
+    )
+
+    self._terminated = True
+
   def _receive_message(self, message_stub: MessageStub, sequence_number: int):
     LOGGER.debug(f'Received message id {message_stub.id} (sequence number {sequence_number})')
 
-    match message_stub.id:
-      case KexInitMessage.id:
-        if self._key_exchange is None:
-          self._key_exchange = iter(self._run_key_exchange())
-          next(self._key_exchange)
+    try:
+      match message_stub.id:
+        case KexInitMessage.id:
+          if self._key_exchange is None:
+            self._key_exchange = iter(self._run_key_exchange())
+            next(self._key_exchange)
 
-        self._key_exchange.send(message_stub)
-      case _ if (message_stub.id == NewKeysMessage.id) or (30 <= message_stub.id <= 49):
-        if self._key_exchange is None:
-          raise ProtocolError
-
-        try:
           self._key_exchange.send(message_stub)
-        except StopIteration:
-          pass
-      case ExtInfoMessage.id:
-        if self._encryption_in is None:
-          raise ProtocolError
+        case _ if (message_stub.id == NewKeysMessage.id) or (30 <= message_stub.id <= 49):
+          if self._key_exchange is None:
+            raise ProtocolError
 
-        _ext_info = message_stub.decode(ExtInfoMessage)
-      case ServiceRequestMessage.id:
-        if self._encryption_in is None:
-          raise ProtocolError
+          try:
+            self._key_exchange.send(message_stub)
+          except StopIteration:
+            pass
+        case ExtInfoMessage.id:
+          if self._encryption_in is None:
+            raise ProtocolError
 
-        message = message_stub.decode(ServiceRequestMessage)
+          _ext_info = message_stub.decode(ExtInfoMessage)
+        case ServiceRequestMessage.id:
+          if (self._encryption_in is None) or (self._key_exchange is not None):
+            raise ProtocolError
 
-        match message.service_name:
-          case 'ssh-userauth':
-            self._send_message(
-              ServiceAcceptMessage(service_name=message.service_name),
-            )
-          case _:
-            self._send_message(DisconnectMessage(
-              reason_code=DisconnectReason.ServiceNotAvailable,
-              description='Service not available',
-              language_tag='',
+          message = message_stub.decode(ServiceRequestMessage)
+
+          match message.service_name:
+            case 'ssh-userauth':
+              if self._authenticated:
+                raise ProtocolError
+
+              self._send_message(
+                ServiceAcceptMessage(service_name=message.service_name),
+              )
+            case _:
+              self._disconnect(DisconnectReason.ServiceNotAvailable, 'Service not available')
+        case UserAuthRequestMessage.id:
+          if (self._encryption_in is None) or (self._key_exchange is not None):
+            raise ProtocolError
+
+          if self._authenticated:
+            raise ProtocolError
+
+          message = message_stub.decode(UserAuthRequestMessage)
+
+          if message.type in self.settings.supported_auth_methods:
+            match message.details:
+              case UserAuthRequestDetailsPassword(password=password, new_password=None):
+                def respond(success: bool):
+                  if success:
+                    self._send_message(UserAuthSuccessMessage())
+                    self._authenticated = True
+                  else:
+                    self._send_message(UserAuthFailureMessage(
+                      supported_methods=list(self.settings.supported_auth_methods),
+                      partial_success=False,
+                    ))
+
+                self._events.append(AuthWithPasswordRequestEvent(
+                  user_name=message.user_name,
+                  password=password,
+                  respond=respond,
+                ))
+
+              case UserAuthRequestDetailsPublicKey(algorithm=algorithm, public_key=public_key, signature=signature):
+                def respond(success: bool):
+                  if success:
+                    if signature is None:
+                      self._send_message(UserAuthPublicKeyOk(
+                        algorithm=algorithm,
+                        public_key=public_key,
+                      ))
+                    else:
+                      self._send_message(UserAuthSuccessMessage())
+                      self._authenticated = True
+                  else:
+                    self._send_message(UserAuthFailureMessage(
+                      supported_methods=list(self.settings.supported_auth_methods),
+                      partial_success=False,
+                    ))
+
+                self._events.append(AuthWithPublicKeyRequestEvent(
+                  user_name=message.user_name,
+                  algorithm=algorithm,
+                  public_key=public_key,
+                  authenticating=(signature is not None),
+                  respond=respond,
+                ))
+
+              case _:
+                raise ProtocolError
+          else:
+            self._send_message(UserAuthFailureMessage(
+              supported_methods=list(self.settings.supported_auth_methods),
+              partial_success=False,
             ))
 
-            self._terminated = True
-            return
-      case UserAuthRequestMessage.id:
-        if self._encryption_in is None:
-          raise ProtocolError
+        case _:
+          self._disconnect(DisconnectReason.ProtocolError, f'Unsupported message id {message_stub.id}')
 
-        message = message_stub.decode(UserAuthRequestMessage)
-        __import__('pprint').pprint(message)
-      case _:
-        raise NotImplementedError(f'Unsupported message id {message_stub.id}')
+          if self.debug:
+            raise NotImplementedError(f'Unsupported message id {message_stub.id}')
+    except ProtocolError:
+      self._disconnect(DisconnectReason.ProtocolError, 'Protocol error')
+
+      if self.debug:
+        raise
 
   def _run_key_exchange(self) -> MessageFlow[None]:
     assert self._key_exchange is not None
@@ -529,9 +614,11 @@ async def main():
     LOGGER.debug(f'Incoming connection from {tcp_connection.client_name} to {tcp_connection.server_name}')
 
     conn = SansIOConnection(
+      debug=True,
       settings=SansIOConnectionSettings(
         host_keys=get_host_keys(),
         software_version='aiossh_0.0.0',
+        supported_auth_methods=['publickey'],
       ),
     )
 
@@ -543,6 +630,12 @@ async def main():
           case DataEvent(chunk):
             tcp_connection.writer.write(chunk)
             await tcp_connection.writer.drain()
+          case AuthWithPasswordRequestEvent(user_name=user_name, password=password, respond=respond):
+            print(f'Auth with password request for user "{user_name}" with password "{password}"')
+            respond(True)
+          case AuthWithPublicKeyRequestEvent(user_name=user_name, algorithm=algorithm, public_key=public_key, authenticating=authenticating, respond=respond):
+            print(f'Auth with public key request for user "{user_name}" with algorithm "{algorithm}" and public key "{public_key.hex()}" (authenticating={authenticating})')
+            respond(True)
           case _:
             print('Event:', event)
 
