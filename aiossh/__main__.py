@@ -14,6 +14,7 @@ from .error import ConnectionTerminatedError, UnreachableError
 from .events import (
   AuthWithPasswordRequestEvent,
   AuthWithPublicKeyRequestEvent,
+  ChannelCloseEvent,
   ChannelDataEvent,
   ChannelEofEvent,
   ChannelOpenEvent,
@@ -22,9 +23,9 @@ from .events import (
   SessionShellEvent,
   Stream,
 )
-from .pty import PTYSession, RegularSubprocess, iter_reader
 from .public.base import PrivateKey
 from .public.rsa import RSAPrivateKey
+from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess, iter_reader
 
 
 LOGGER = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ def get_host_keys():
 
 @dataclass(slots=True)
 class Shell:
-  subprocess: Optional[PTYSession | RegularSubprocess] = field(default=None, init=False)
+  subprocess: Optional[Subprocess] = field(default=None, init=False)
   stream: Optional[Stream] = field(default=None, init=False)
   trigger: asyncio.Event
 
@@ -69,7 +70,7 @@ class Shell:
         raise UnreachableError
 
     if event.pty is not None:
-      subproc = PTYSession.create(
+      subproc = PTYSubprocess.create(
         command,
         cwd=Path.home(),
         env={
@@ -128,7 +129,7 @@ async def main():
       ),
     )
 
-    shell: Optional[Shell] = None
+    shells = dict[int, Shell]()
     trigger = asyncio.Event()
 
     async with asyncio.TaskGroup() as group:
@@ -162,12 +163,12 @@ async def main():
                 group.create_task(shell.start(event))
 
               case ChannelDataEvent(channel_id=channel_id, chunk=chunk):
-                assert shell is not None
+                shell = shells[channel_id]
                 assert shell.stream is not None
 
                 shell.recv_stdin(chunk)
               case ChannelEofEvent(channel_id=channel_id):
-                assert shell is not None
+                shell = shells[channel_id]
                 assert shell.stream is not None
 
                 # shell.stream.exit(7)

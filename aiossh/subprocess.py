@@ -8,12 +8,12 @@ import pty
 import signal
 import sys
 import termios
-import tty
+from abc import ABC, abstractmethod
 from asyncio import StreamReader, TaskGroup
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Optional
+from typing import Optional, override
 
 import aiodrive
 
@@ -23,8 +23,17 @@ from .stream import AsyncReadableStreamProtocol
 LOGGER = logging.getLogger(__name__)
 
 
+class Subprocess(ABC):
+  code: Optional[int] = None
+  reader: StreamReader
+
+  @abstractmethod
+  def write(self, data: bytes, /):
+    raise NotImplementedError
+
+
 @dataclass(slots=True)
-class PTYSession:
+class PTYSubprocess(Subprocess):
   _master_fd: int = field(repr=False)
   process: aiodrive.Process
   reader: StreamReader
@@ -35,6 +44,7 @@ class PTYSession:
     buf = array.array('H', [size.lines, size.columns, 0, 0])
     fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, buf)
 
+  @override
   def write(self, data: bytes, /):
     os.write(self._master_fd, data)
 
@@ -86,12 +96,13 @@ class PTYSession:
 
 
 @dataclass(slots=True)
-class RegularSubprocess:
+class RegularSubprocess(Subprocess):
   process: aiodrive.Process
   reader: StreamReader
 
   code: Optional[int] = None
 
+  @override
   def write(self, data: bytes, /):
     self.process.stdin.write(data)
 
@@ -122,18 +133,6 @@ class RegularSubprocess:
         subprocess.code = 0
 
 
-aiodrive.set_file_unbuffered
-@contextlib.contextmanager
-def unbuffered_tty(file: IO[bytes], /):
-  fd = file.fileno()
-  attr = termios.tcgetattr(fd)
-  tty.setcbreak(fd, termios.TCSANOW)
-
-  try:
-    yield
-  finally:
-    termios.tcsetattr(fd, termios.TCSANOW, attr)
-
 async def iter_reader(reader: AsyncReadableStreamProtocol, /, *, chunk_size: int = 65_536):
   while True:
     chunk = await reader.read(chunk_size)
@@ -145,15 +144,15 @@ async def iter_reader(reader: AsyncReadableStreamProtocol, /, *, chunk_size: int
 
 
 async def main():
-  with unbuffered_tty(sys.stdin.buffer):
+  with aiodrive.set_file_unbuffered(sys.stdin.buffer):
     stdin = await aiodrive.get_reader(sys.stdin.buffer)
     stdout = await aiodrive.get_writer(sys.stdout.buffer)
 
-    async def pipe_stdin_to_pty(session: PTYSession):
+    async def pipe_stdin_to_pty(session: PTYSubprocess):
       async for chunk in iter_reader(stdin):
         session.write(chunk)
 
-    async def watch_terminal_size(session: PTYSession):
+    async def watch_terminal_size(session: PTYSubprocess):
       while True:
         await aiodrive.wait_for_signal(signal.SIGWINCH)
         session.resize(os.get_terminal_size())
@@ -161,7 +160,7 @@ async def main():
     session = None
 
     try:
-      async with PTYSession.create(
+      async with PTYSubprocess.create(
         Path(os.environ['SHELL']).as_posix(),
         cwd=Path.home(),
         env=os.environ,
