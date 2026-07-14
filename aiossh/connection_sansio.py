@@ -702,9 +702,9 @@ class SansIOConnection:
                 channel.busy = False
 
               match message.details:
-                case ChannelRequestDetailsExec(details=details):
+                case ChannelRequestDetailsExec():
                   event = SessionExecEvent(
-                    command=details.command,
+                    command=message.details.command,
                     accept=accept,
                     reject=reject,
                   )

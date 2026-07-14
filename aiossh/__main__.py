@@ -3,7 +3,9 @@ import logging
 import os
 import pickle
 import signal
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import aiodrive
 
@@ -18,7 +20,9 @@ from .events import (
   DataEvent,
   SessionExecEvent,
   SessionShellEvent,
+  Stream,
 )
+from .pty import PTYSession, iter_reader
 from .public.base import PrivateKey
 from .public.rsa import RSAPrivateKey
 
@@ -27,7 +31,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 def get_host_keys():
-
   host_keys_path = Path('tmp/keys.pkl')
 
   if host_keys_path.exists():
@@ -45,6 +48,51 @@ def get_host_keys():
 
   return host_keys
 
+
+@dataclass(slots=True)
+class Shell:
+  pty_session: Optional[PTYSession] = field(default=None, init=False)
+  stream: Optional[Stream] = field(default=None, init=False)
+  trigger: asyncio.Event
+
+  def recv_stdin(self, chunk: bytes):
+    assert self.pty_session is not None
+    self.pty_session.write(chunk)
+
+  async def start(self, event: SessionShellEvent):
+    async with PTYSession.create(
+      os.environ['SHELL'],
+      cwd=Path.home(),
+      env={
+        'TERM': 'xterm-256color',
+      },
+      terminal_size=os.terminal_size([80, 24]),
+      # terminal_size=os.terminal_size(session.settings.pty.window_chars),
+    ) as self.pty_session:
+      print(f'PTY session started with pid {self.pty_session.process.pid}')
+      self.stream = event.accept()
+
+      async def pipe_pty_to_stdout():
+        assert self.pty_session is not None
+        assert self.stream is not None
+
+        async for chunk in iter_reader(self.pty_session.reader):
+          print(repr(chunk))
+          self.stream.write(chunk)
+          self.trigger.set()
+
+      async with asyncio.TaskGroup() as group:
+        group.create_task(pipe_pty_to_stdout())
+        # group.create_task(watch_terminal_size(session))
+
+    print(f'PTY session exited with code {self.pty_session.code}')
+
+    assert self.pty_session.code is not None
+    self.stream.exit(self.pty_session.code)
+    self.trigger.set()
+
+
+
 async def main():
   LOGGER.debug(f'Process id: {os.getpid()}')
 
@@ -60,61 +108,75 @@ async def main():
       ),
     )
 
-    stream = None
+    shell: Optional[Shell] = None
+    trigger = asyncio.Event()
 
-    while True:
-      # LOGGER.debug('Enumerating events...')
-
-      try:
-        for event in conn.events():
-          match event:
-            case DataEvent(chunk):
-              tcp_connection.writer.write(chunk)
-              await tcp_connection.writer.drain()
-            case AuthWithPasswordRequestEvent():
-              event.respond(True)
-            case AuthWithPublicKeyRequestEvent():
-              event.respond(True)
-            case ChannelOpenEvent():
-              channel_id = event.accept()
-              print(f'Accepted open channel request with channel id {channel_id}')
-            case SessionExecEvent(command=command):
-              print(f'Session exec request with command "{command}"')
-              stream = event.accept()
-              # stream.write(b'Hello, world!\n')
-              # stream.exit(7)
-            case ChannelDataEvent(channel_id=channel_id, chunk=chunk):
-              assert stream is not None
-              stream.write(chunk)
-            case ChannelEofEvent(channel_id=channel_id):
-              assert stream is not None
-              stream.exit(7)
-            case SessionShellEvent():
-              stream = event.accept()
-            case _:
-              print('Event:', event)
-
+    async with asyncio.TaskGroup() as group:
+      while True:
+        # LOGGER.debug('Enumerating events...')
 
         try:
-          chunk = await tcp_connection.reader.read(65_536)
-        except:
-          conn.close()
+          trigger.clear()
 
           for event in conn.events():
             match event:
               case DataEvent(chunk):
                 tcp_connection.writer.write(chunk)
                 await tcp_connection.writer.drain()
+              case AuthWithPasswordRequestEvent():
+                event.respond(True)
+              case AuthWithPublicKeyRequestEvent():
+                event.respond(True)
+              case ChannelOpenEvent():
+                channel_id = event.accept()
+                print(f'Accepted open channel request with channel id {channel_id}')
+              case SessionExecEvent(command=command):
+                print(f'Session exec request with command "{command}"')
+                stream = event.accept()
+                # stream.write(b'Hello, world!\n')
+                # stream.exit(7)
+              case ChannelDataEvent(channel_id=channel_id, chunk=chunk):
+                assert shell is not None
+                assert shell.stream is not None
 
-          raise
+                shell.recv_stdin(chunk)
+              case ChannelEofEvent(channel_id=channel_id):
+                assert shell is not None
+                assert shell.stream is not None
 
-        if not chunk:
+                # shell.stream.exit(7)
+              case SessionShellEvent():
+                shell = Shell(trigger=trigger)
+                group.create_task(shell.start(event))
+              case _:
+                print('Event:', event)
+
+          try:
+            index, chunk = await aiodrive.race(
+              tcp_connection.reader.read(65_536),
+              trigger.wait(),
+            )
+          except BaseException as e:
+            print(repr(e))
+            conn.close()
+
+            for event in conn.events():
+              match event:
+                case DataEvent(chunk):
+                  tcp_connection.writer.write(chunk)
+                  await tcp_connection.writer.drain()
+
+            raise
+
+          if index == 0:
+            if not chunk:
+              break
+
+            assert isinstance(chunk, bytes)
+            conn.feed(chunk)
+        except ConnectionTerminatedError:
+          LOGGER.debug('Connection terminated error')
           break
-
-        conn.feed(chunk)
-      except ConnectionTerminatedError:
-        LOGGER.debug('Connection terminated error')
-        break
 
 
   try:
