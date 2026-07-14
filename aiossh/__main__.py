@@ -19,6 +19,7 @@ from .events import (
   ChannelEofEvent,
   ChannelOpenEvent,
   DataEvent,
+  DisconnectEvent,
   SessionExecEvent,
   SessionShellEvent,
   Stream,
@@ -59,6 +60,10 @@ class Shell:
   def recv_stdin(self, chunk: bytes):
     assert self.subprocess is not None
     self.subprocess.write(chunk)
+
+  def recv_stdin_eof(self):
+    assert self.subprocess is not None
+    self.subprocess.write(b'')
 
   async def start(self, event: SessionExecEvent | SessionShellEvent):
     match event:
@@ -132,7 +137,7 @@ async def main():
     shells = dict[int, Shell]()
     trigger = asyncio.Event()
 
-    async with asyncio.TaskGroup() as group:
+    async with aiodrive.volatile_task_group() as group:
       while True:
         # LOGGER.debug('Enumerating events...')
 
@@ -145,10 +150,18 @@ async def main():
                 tcp_connection.writer.write(chunk)
                 await tcp_connection.writer.drain()
 
+              case DisconnectEvent(reason=reason, description=description):
+                LOGGER.info(f'Disconnect event with reason {reason} and description "{description}"')
+                return
+
               case AuthWithPasswordRequestEvent():
                 event.respond(True)
               case AuthWithPublicKeyRequestEvent():
                 event.respond(True)
+
+              case ChannelCloseEvent():
+                LOGGER.info(f'Channel closed with channel id {event.channel_id}')
+                del shells[event.channel_id]
 
               case ChannelOpenEvent():
                 channel_id = event.accept()
@@ -156,10 +169,15 @@ async def main():
 
               case SessionExecEvent(command=command):
                 LOGGER.info(f'Session exec request with command "{command}"')
+
                 shell = Shell(trigger=trigger)
+                shells[event.channel_id] = shell
+
                 group.create_task(shell.start(event))
               case SessionShellEvent():
                 shell = Shell(trigger=trigger)
+                shells[event.channel_id] = shell
+
                 group.create_task(shell.start(event))
 
               case ChannelDataEvent(channel_id=channel_id, chunk=chunk):
@@ -171,7 +189,7 @@ async def main():
                 shell = shells[channel_id]
                 assert shell.stream is not None
 
-                # shell.stream.exit(7)
+                shell.recv_stdin_eof()
               case _:
                 LOGGER.info(f'Event: {event}')
 
@@ -180,17 +198,12 @@ async def main():
               tcp_connection.reader.read(65_536),
               trigger.wait(),
             )
-          except BaseException as e:
-            LOGGER.error(repr(e))
+          except asyncio.CancelledError:
             conn.close()
-
-            for event in conn.events():
-              match event:
-                case DataEvent(chunk):
-                  tcp_connection.writer.write(chunk)
-                  await tcp_connection.writer.drain()
-
             raise
+          except ConnectionError:
+            LOGGER.info('Connection error')
+            return
 
           if index == 0:
             if not chunk:

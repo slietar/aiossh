@@ -46,6 +46,7 @@ class PTYSubprocess(Subprocess):
 
   @override
   def write(self, data: bytes, /):
+    # TODO: Close when receving EOF
     os.write(self._master_fd, data)
 
   @classmethod
@@ -104,7 +105,10 @@ class RegularSubprocess(Subprocess):
 
   @override
   def write(self, data: bytes, /):
-    self.process.stdin.write(data)
+    if data:
+      self.process.stdin.write(data)
+    else:
+      self.process.stdin.close()
 
   @classmethod
   @contextlib.asynccontextmanager

@@ -22,10 +22,12 @@ from .error import (
 from .events import (
   AuthWithPasswordRequestEvent,
   AuthWithPublicKeyRequestEvent,
+  ChannelCloseEvent,
   ChannelDataEvent,
   ChannelEofEvent,
   ChannelOpenEvent,
   DataEvent,
+  DisconnectEvent,
   Event,
   ExchangedKeysEvent,
   SessionExecEvent,
@@ -106,6 +108,8 @@ class Channel:
   dead: bool = False
 
   inner: SessionInnerChannel
+
+  local_id: int
   remote_id: int
 
 @dataclass(slots=True)
@@ -150,7 +154,7 @@ class SansIOConnection:
   _received_partial_packet: Optional[bytes] = field(default=None, init=False)
 
   _channels: dict[int, Channel] = field(default_factory=dict, init=False)
-  _next_channel_id: int = field(default=0, init=False)
+  _next_channel_id: int = field(default=865, init=False)
 
   def __post_init__(self):
     self._server_ident_string = IdentString(
@@ -207,6 +211,8 @@ class SansIOConnection:
 
 
   def close(self):
+    # This does yield a DisconnectEvent
+
     if self._terminated:
       raise ConnectionTerminatedError
 
@@ -395,6 +401,14 @@ class SansIOConnection:
       ),
     )
 
+    self._events.append(
+      DisconnectEvent(
+        reason=reason_code,
+        description=description,
+        other=False,
+      ),
+    )
+
     self._terminated = True
 
   def _receive_message(self, message_stub: MessageStub, sequence_number: int):
@@ -407,6 +421,14 @@ class SansIOConnection:
           self._terminated = True
 
           LOGGER.debug(f'Disconnected by client: reason={DisconnectReason(message.reason_code).name!r} description={message.description!r}')
+
+          self._events.append(
+            DisconnectEvent(
+              reason=message.reason_code,
+              description=message.description,
+              other=True,
+            ),
+          )
 
         case KexInitMessage.id:
           if self._key_exchange is None:
@@ -522,17 +544,19 @@ class SansIOConnection:
             case _:
               raise NotImplementedError
 
-          channel = Channel(
-            inner=inner_channel,
-            remote_id=message.sender_channel_id,
-          )
-
           def accept_channel_open():
             if self._terminated:
               raise ConnectionTerminatedError
 
             channel_id = self._next_channel_id
             self._next_channel_id += 1
+
+            channel = Channel(
+              inner=inner_channel,
+
+              local_id=self._next_channel_id,
+              remote_id=message.sender_channel_id,
+            )
 
             self._channels[channel_id] = channel
 
@@ -631,7 +655,7 @@ class SansIOConnection:
         case ChannelDataMessage():
           self._events.append(
             ChannelDataEvent(
-              channel_id=channel.remote_id,
+              channel_id=channel.local_id,
               chunk=message.data,
             ),
           )
@@ -639,7 +663,7 @@ class SansIOConnection:
         case ChannelEofMessage():
           self._events.append(
             ChannelEofEvent(
-              channel_id=channel.remote_id,
+              channel_id=channel.local_id,
             ),
           )
 
@@ -662,6 +686,12 @@ class SansIOConnection:
                 self._send_message(
                   ChannelCloseMessage(
                     recipient_channel_id=channel.remote_id,
+                  ),
+                )
+
+                self._events.append(
+                  ChannelCloseEvent(
+                    channel_id=channel.local_id,
                   ),
                 )
 
@@ -705,6 +735,7 @@ class SansIOConnection:
               match message.details:
                 case ChannelRequestDetailsExec():
                   event = SessionExecEvent(
+                    channel_id=channel.local_id,
                     command=message.details.command,
                     env=channel.inner.env,
                     pty=channel.inner.pty,
@@ -714,6 +745,7 @@ class SansIOConnection:
                   )
                 case ChannelRequestDetailsShell():
                   event = SessionShellEvent(
+                    channel_id=channel.local_id,
                     env=channel.inner.env,
                     pty=channel.inner.pty,
 

@@ -25,6 +25,14 @@ class DataEvent:
   chunk: bytes
 
 @dataclass(slots=True)
+class DisconnectEvent:
+  reason: int
+  description: str
+
+  # Whether the other party sent the disconnect message
+  other: bool
+
+@dataclass(slots=True)
 class ExchangedKeysEvent:
   pass
 
@@ -46,6 +54,11 @@ class ChannelOpenEvent:
 
 
 @dataclass(slots=True)
+class ChannelCloseEvent:
+  channel_id: int
+
+
+@dataclass(slots=True)
 class ChannelDataEvent:
   channel_id: int
   chunk: bytes
@@ -64,6 +77,7 @@ class SessionPTYOptions:
 
 @dataclass(slots=True)
 class SessionExecEvent:
+  channel_id: int
   command: str
   env: dict[str, str]
   pty: Optional[SessionPTYOptions]
@@ -73,6 +87,7 @@ class SessionExecEvent:
 
 @dataclass(slots=True)
 class SessionShellEvent:
+  channel_id: int
   env: dict[str, str]
   pty: Optional[SessionPTYOptions]
 
@@ -90,7 +105,9 @@ type Event = (
     AuthWithPasswordRequestEvent
     | AuthWithPublicKeyRequestEvent
     | DataEvent
+    | DisconnectEvent
     | ExchangedKeysEvent
+    | ChannelCloseEvent
     | ChannelEofEvent
     | ChannelOpenEvent
     | ChannelDataEvent
