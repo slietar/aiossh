@@ -20,7 +20,7 @@ import aiodrive
 from .stream import AsyncReadableStreamProtocol
 
 
-logger = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -70,21 +70,59 @@ class PTYSession:
           session = cls(master_fd, process, reader)
           session.resize(terminal_size)
         except Exception as e:
-          logger.error(f'Failed to setup process + {e}')
+          LOGGER.error(f'Failed to setup process + {e}')
         else:
           yield session
     except aiodrive.ProcessTerminatedException as e: # TODO: Use except*
-      logger.info(f'Process terminated with code {e.code}')
+      LOGGER.info(f'Process terminated with code {e.code}')
 
       if session is not None:
         session.code = e.code & 0xff
     else:
-      logger.info('Process exited normally')
+      LOGGER.info('Process exited normally')
 
       if session is not None:
         session.code = 0
 
 
+@dataclass(slots=True)
+class RegularSubprocess:
+  process: aiodrive.Process
+  reader: StreamReader
+
+  code: Optional[int] = None
+
+  def write(self, data: bytes, /):
+    self.process.stdin.write(data)
+
+  @classmethod
+  @contextlib.asynccontextmanager
+  async def create(cls, command: str, *, cwd: Path, env: Mapping[str, str]):
+    process = await aiodrive.start_process(command, cwd=cwd, env=env)
+
+    async def wait():
+      await process.wait(first_signal=signal.SIGTERM)
+      raise aiodrive.ProcessTerminatedException(0)
+
+    subprocess = None
+
+    try:
+      async with aiodrive.contextualize(wait()):
+        subprocess = cls(process, process.stdout)
+        yield subprocess
+    except aiodrive.ProcessTerminatedException as e: # TODO: Use except*
+      LOGGER.info(f'Process terminated with code {e.code}')
+
+      if subprocess is not None:
+        subprocess.code = e.code & 0xff
+    else:
+      LOGGER.info('Process exited normally')
+
+      if subprocess is not None:
+        subprocess.code = 0
+
+
+aiodrive.set_file_unbuffered
 @contextlib.contextmanager
 def unbuffered_tty(file: IO[bytes], /):
   fd = file.fileno()

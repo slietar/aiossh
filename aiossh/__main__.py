@@ -10,7 +10,7 @@ from typing import Optional
 import aiodrive
 
 from .connection_sansio import SansIOConnection, SansIOConnectionSettings
-from .error import ConnectionTerminatedError
+from .error import ConnectionTerminatedError, UnreachableError
 from .events import (
   AuthWithPasswordRequestEvent,
   AuthWithPublicKeyRequestEvent,
@@ -22,7 +22,7 @@ from .events import (
   SessionShellEvent,
   Stream,
 )
-from .pty import PTYSession, iter_reader
+from .pty import PTYSession, RegularSubprocess, iter_reader
 from .public.base import PrivateKey
 from .public.rsa import RSAPrivateKey
 
@@ -51,44 +51,64 @@ def get_host_keys():
 
 @dataclass(slots=True)
 class Shell:
-  pty_session: Optional[PTYSession] = field(default=None, init=False)
+  subprocess: Optional[PTYSession | RegularSubprocess] = field(default=None, init=False)
   stream: Optional[Stream] = field(default=None, init=False)
   trigger: asyncio.Event
 
   def recv_stdin(self, chunk: bytes):
-    assert self.pty_session is not None
-    self.pty_session.write(chunk)
+    assert self.subprocess is not None
+    self.subprocess.write(chunk)
 
-  async def start(self, event: SessionShellEvent):
-    async with PTYSession.create(
-      os.environ['SHELL'],
-      cwd=Path.home(),
-      env={
-        'TERM': 'xterm-256color',
-      },
-      terminal_size=os.terminal_size([80, 24]),
-      # terminal_size=os.terminal_size(session.settings.pty.window_chars),
-    ) as self.pty_session:
-      print(f'PTY session started with pid {self.pty_session.process.pid}')
+  async def start(self, event: SessionExecEvent | SessionShellEvent):
+    match event:
+      case SessionExecEvent():
+        command = event.command
+      case SessionShellEvent():
+        command = os.environ['SHELL']
+      case _:
+        raise UnreachableError
+
+    if event.pty is not None:
+      subproc = PTYSession.create(
+        command,
+        cwd=Path.home(),
+        env={
+          'TERM': 'xterm-256color',
+        },
+        terminal_size=os.terminal_size([
+          event.pty.window_chars[0],
+          event.pty.window_chars[1],
+        ]),
+      )
+    else:
+      subproc = RegularSubprocess.create(
+        command,
+        cwd=Path.home(),
+        env={
+          'TERM': 'xterm-256color',
+        },
+      )
+
+    async with subproc as self.subprocess:
+      LOGGER.debug(f'Subprocess started with pid {self.subprocess.process.pid}')
       self.stream = event.accept()
 
-      async def pipe_pty_to_stdout():
-        assert self.pty_session is not None
+      async def pipe_subprocess_to_stdout():
+        assert self.subprocess is not None
         assert self.stream is not None
 
-        async for chunk in iter_reader(self.pty_session.reader):
-          print(repr(chunk))
+        async for chunk in iter_reader(self.subprocess.reader):
           self.stream.write(chunk)
           self.trigger.set()
 
       async with asyncio.TaskGroup() as group:
-        group.create_task(pipe_pty_to_stdout())
+        group.create_task(pipe_subprocess_to_stdout())
         # group.create_task(watch_terminal_size(session))
 
-    print(f'PTY session exited with code {self.pty_session.code}')
+    LOGGER.debug(f'Subprocess exited with code {self.subprocess.code}')
 
-    assert self.pty_session.code is not None
-    self.stream.exit(self.pty_session.code)
+    assert self.subprocess.code is not None
+    self.stream.exit(self.subprocess.code)
     self.trigger.set()
 
 
@@ -123,18 +143,24 @@ async def main():
               case DataEvent(chunk):
                 tcp_connection.writer.write(chunk)
                 await tcp_connection.writer.drain()
+
               case AuthWithPasswordRequestEvent():
                 event.respond(True)
               case AuthWithPublicKeyRequestEvent():
                 event.respond(True)
+
               case ChannelOpenEvent():
                 channel_id = event.accept()
-                print(f'Accepted open channel request with channel id {channel_id}')
+                LOGGER.info(f'Accepted channel request with channel id {channel_id}')
+
               case SessionExecEvent(command=command):
-                print(f'Session exec request with command "{command}"')
-                stream = event.accept()
-                # stream.write(b'Hello, world!\n')
-                # stream.exit(7)
+                LOGGER.info(f'Session exec request with command "{command}"')
+                shell = Shell(trigger=trigger)
+                group.create_task(shell.start(event))
+              case SessionShellEvent():
+                shell = Shell(trigger=trigger)
+                group.create_task(shell.start(event))
+
               case ChannelDataEvent(channel_id=channel_id, chunk=chunk):
                 assert shell is not None
                 assert shell.stream is not None
@@ -145,11 +171,8 @@ async def main():
                 assert shell.stream is not None
 
                 # shell.stream.exit(7)
-              case SessionShellEvent():
-                shell = Shell(trigger=trigger)
-                group.create_task(shell.start(event))
               case _:
-                print('Event:', event)
+                LOGGER.info(f'Event: {event}')
 
           try:
             index, chunk = await aiodrive.race(
@@ -157,7 +180,7 @@ async def main():
               trigger.wait(),
             )
           except BaseException as e:
-            print(repr(e))
+            LOGGER.error(repr(e))
             conn.close()
 
             for event in conn.events():
@@ -177,6 +200,8 @@ async def main():
         except ConnectionTerminatedError:
           LOGGER.debug('Connection terminated error')
           break
+
+    LOGGER.debug(f'Closing connection from {tcp_connection.client_name}')
 
 
   try:

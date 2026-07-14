@@ -29,6 +29,7 @@ from .events import (
   Event,
   ExchangedKeysEvent,
   SessionExecEvent,
+  SessionPTYOptions,
   SessionShellEvent,
   Stream,
 )
@@ -51,8 +52,10 @@ from .messages.channel import (
 )
 from .messages.channel_request import (
   ChannelFailureMessage,
+  ChannelRequestDetailsEnv,
   ChannelRequestDetailsExec,
   ChannelRequestDetailsExitStatus,
+  ChannelRequestDetailsPtyReq,
   ChannelRequestDetailsShell,
   ChannelRequestMessage,
   ChannelSuccessMessage,
@@ -107,7 +110,8 @@ class Channel:
 
 @dataclass(slots=True)
 class SessionInnerChannel:
-  pass
+  env: dict[str, str] = field(default_factory=dict, init=False)
+  pty: Optional[SessionPTYOptions] = field(default=None, init=False)
 
 
 @dataclass(kw_only=True)
@@ -619,12 +623,9 @@ class SansIOConnection:
         raise
 
   def _receive_channel_messages(self, channel: Channel):
-    while channel.queued_messages:
-      if channel.busy:
-        break
-
+    while channel.queued_messages and not channel.busy: # TODO: Why the channel.busy check?
       message = channel.queued_messages.popleft()
-      print(f'Processing queued message {message} for channel with remote id {channel.remote_id}')
+      # print(f'Processing queued message {message} for channel with remote id {channel.remote_id}')
 
       match message:
         case ChannelDataMessage():
@@ -705,11 +706,17 @@ class SansIOConnection:
                 case ChannelRequestDetailsExec():
                   event = SessionExecEvent(
                     command=message.details.command,
+                    env=channel.inner.env,
+                    pty=channel.inner.pty,
+
                     accept=accept,
                     reject=reject,
                   )
                 case ChannelRequestDetailsShell():
                   event = SessionShellEvent(
+                    env=channel.inner.env,
+                    pty=channel.inner.pty,
+
                     accept=accept,
                     reject=reject,
                   )
@@ -717,8 +724,47 @@ class SansIOConnection:
                   raise UnreachableError
 
               self._events.append(event)
-
               channel.busy = True
+
+            case ChannelRequestDetailsEnv():
+              if not isinstance(channel.inner, SessionInnerChannel):
+                raise ProtocolError
+
+              if message.details.name in channel.inner.env:
+                raise ProtocolError
+
+              channel.inner.env[message.details.name] = message.details.value
+
+              if message.want_reply:
+                self._send_message(
+                  ChannelSuccessMessage(
+                    recipient_channel_id=channel.remote_id,
+                  ),
+                )
+
+            case ChannelRequestDetailsPtyReq():
+              if not isinstance(channel.inner, SessionInnerChannel):
+                raise ProtocolError
+
+              if channel.inner.pty is not None:
+                raise ProtocolError
+
+              channel.inner.pty = SessionPTYOptions(
+                terminal_modes=message.details.term_modes,
+                terminal_name=message.details.term_name,
+                window_chars=(message.details.term_width_chars, message.details.term_height_chars),
+                window_pixels=(message.details.term_width_pixels, message.details.term_height_pixels),
+              )
+
+              if message.want_reply:
+                self._send_message(
+                  ChannelSuccessMessage(
+                    recipient_channel_id=channel.remote_id,
+                  ),
+                )
+
+            case _:
+              print('Not handled', message.details)
 
         case _:
           # typing.assert_never(message)

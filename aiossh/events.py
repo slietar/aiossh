@@ -1,8 +1,9 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Optional, Protocol
 
 from .messages.channel import ChannelOpenFailureReason, ChannelOpenMessage
+from .terminal_modes import TerminalModes
 
 
 @dataclass(slots=True)
@@ -55,18 +56,26 @@ class ChannelEofEvent:
 
 
 @dataclass(slots=True)
-class SessionSetEnvEvent:
-  name: str
-  value: str
+class SessionPTYOptions:
+  terminal_modes: TerminalModes
+  terminal_name: bytes
+  window_chars: tuple[int, int]
+  window_pixels: tuple[int, int]
 
 @dataclass(slots=True)
 class SessionExecEvent:
   command: str
+  env: dict[str, str]
+  pty: Optional[SessionPTYOptions]
+
   accept: Callable[[], Stream]
   reject: Callable[[], None]
 
 @dataclass(slots=True)
 class SessionShellEvent:
+  env: dict[str, str]
+  pty: Optional[SessionPTYOptions]
+
   accept: Callable[[], Stream]
   reject: Callable[[], None]
 
@@ -85,7 +94,6 @@ type Event = (
     | ChannelEofEvent
     | ChannelOpenEvent
     | ChannelDataEvent
-    | SessionSetEnvEvent
     | SessionExecEvent
     | SessionShellEvent
 )
