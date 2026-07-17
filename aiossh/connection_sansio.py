@@ -49,6 +49,7 @@ from .messages.channel import (
   ChannelOpenFailureMessage,
   ChannelOpenFailureReason,
   ChannelOpenMessage,
+  ChannelWindowAdjustMessage,
   OpenChannelMessage,
 )
 from .messages.channel_request import (
@@ -86,6 +87,9 @@ from .structures.primitives import encode_mpint, encode_name_list, encode_string
 
 LOGGER = logging.getLogger(__name__)
 
+INITIAL_WINDOW_SIZE = 65_536
+HIGH_WINDOW_SIZE_WATERMARK = 32_768
+
 
 @dataclass(kw_only=True, slots=True)
 class SansIOConnectionSettings:
@@ -110,6 +114,10 @@ class Channel:
 
   local_id: int
   remote_id: int
+
+  max_packet_size: int
+  local_remaining_window_size: int
+  remote_remaining_window_size: int
 
 @dataclass(slots=True)
 class SessionInnerChannel:
@@ -544,6 +552,13 @@ class SansIOConnection:
           if message.sender_channel_id in self._channels:
             raise ProtocolError
 
+          if message.window_size == 0:
+            raise ProtocolError
+
+          # TODO: Find appropriate value
+          # if message.max_packet_size == 0:
+          #   raise ProtocolError
+
           match message.details:
             case ChannelOpenDetailsSession():
               inner_channel = SessionInnerChannel()
@@ -562,6 +577,10 @@ class SansIOConnection:
 
               local_id=self._next_channel_id,
               remote_id=message.sender_channel_id,
+
+              max_packet_size=message.max_packet_size,
+              local_remaining_window_size=INITIAL_WINDOW_SIZE,
+              remote_remaining_window_size=message.window_size,
             )
 
             self._channels[channel_id] = channel
@@ -570,7 +589,7 @@ class SansIOConnection:
               ChannelOpenConfirmationMessage(
                 recipient_channel_id=message.sender_channel_id,
                 sender_channel_id=channel_id,
-                window_size=message.window_size,
+                window_size=channel.local_remaining_window_size,
                 max_packet_size=message.max_packet_size,
               ),
             )
@@ -659,6 +678,22 @@ class SansIOConnection:
 
       match message:
         case ChannelDataMessage():
+          channel.local_remaining_window_size -= len(message.data)
+          LOGGER.debug(f'Channel {channel.local_id} local remaining window size: {channel.local_remaining_window_size}')
+
+          if channel.local_remaining_window_size < 0:
+            raise ProtocolError
+
+          if channel.local_remaining_window_size <= HIGH_WINDOW_SIZE_WATERMARK:
+            self._send_message(
+              ChannelWindowAdjustMessage(
+                recipient_channel_id=channel.remote_id,
+                bytes_to_add=(INITIAL_WINDOW_SIZE - channel.local_remaining_window_size),
+              ),
+            )
+
+            channel.local_remaining_window_size = INITIAL_WINDOW_SIZE
+
           self._events.append(
             ChannelDataEvent(
               channel_id=channel.local_id,
@@ -680,7 +715,7 @@ class SansIOConnection:
                 if channel.dead:
                   return
 
-                self._send_message(
+                self._send_or_queue_message(
                   ChannelRequestMessage(
                     recipient_channel_id=channel.remote_id,
                     request_type='exit-status',
@@ -689,7 +724,7 @@ class SansIOConnection:
                   ),
                 )
 
-                self._send_message(
+                self._send_or_queue_message(
                   ChannelCloseMessage(
                     recipient_channel_id=channel.remote_id,
                   ),
@@ -707,7 +742,7 @@ class SansIOConnection:
                 if channel.dead:
                   return
 
-                self._send_message(
+                self._send_or_queue_message(
                   ChannelDataMessage(
                     recipient_channel_id=channel.remote_id,
                     data=chunk,

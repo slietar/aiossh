@@ -112,6 +112,13 @@ class DataTypeCode(IntEnum):
   Stderr = 1
 
 @dataclass(kw_only=True, slots=True)
+class ChannelWindowAdjustMessage(AutoCodableMessage):
+  id: ClassVar[int] = 93
+
+  recipient_channel_id: int
+  bytes_to_add: int
+
+@dataclass(kw_only=True, slots=True)
 class ChannelDataMessage(AutoCodableMessage):
   id: ClassVar[int] = 94
 
