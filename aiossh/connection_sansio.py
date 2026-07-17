@@ -26,6 +26,7 @@ from .events import (
   ChannelDataEvent,
   ChannelEofEvent,
   ChannelOpenEvent,
+  ChannelWindowAdjustEvent,
   DisconnectEvent,
   Event,
   ExchangedKeysEvent,
@@ -44,13 +45,13 @@ from .messages.channel import (
   ChannelCloseMessage,
   ChannelDataMessage,
   ChannelEofMessage,
+  ChannelMessage,
   ChannelOpenConfirmationMessage,
   ChannelOpenDetailsSession,
   ChannelOpenFailureMessage,
   ChannelOpenFailureReason,
   ChannelOpenMessage,
   ChannelWindowAdjustMessage,
-  OpenChannelMessage,
 )
 from .messages.channel_request import (
   ChannelFailureMessage,
@@ -104,7 +105,7 @@ class Channel:
   # True if we have received a request and are waiting for the consumer to act
   # accordingly
   busy: bool = False
-  queued_messages: deque[OpenChannelMessage] = field(default_factory=deque)
+  queued_messages: deque[ChannelMessage] = field(default_factory=deque)
 
   # True if we have sent a SSH_MSG_CHANNEL_CLOSE and are waiting for the remote
   # side to send a SSH_MSG_CHANNEL_CLOSE
@@ -617,7 +618,7 @@ class SansIOConnection:
             ),
           )
 
-        case ChannelRequestMessage.id | ChannelDataMessage.id | ChannelEofMessage.id:
+        case ChannelRequestMessage.id | ChannelWindowAdjustMessage.id | ChannelDataMessage.id | ChannelEofMessage.id:
           if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
             raise ProtocolError
 
@@ -625,6 +626,8 @@ class SansIOConnection:
           match message_stub.id:
             case ChannelRequestMessage.id:
               message = message_stub.decode(ChannelRequestMessage)
+            case ChannelWindowAdjustMessage.id:
+              message = message_stub.decode(ChannelWindowAdjustMessage)
             case ChannelDataMessage.id:
               message = message_stub.decode(ChannelDataMessage)
             case ChannelEofMessage.id:
@@ -679,7 +682,6 @@ class SansIOConnection:
       match message:
         case ChannelDataMessage():
           channel.local_remaining_window_size -= len(message.data)
-          LOGGER.debug(f'Channel {channel.local_id} local remaining window size: {channel.local_remaining_window_size}')
 
           if channel.local_remaining_window_size < 0:
             raise ProtocolError
@@ -698,6 +700,18 @@ class SansIOConnection:
             ChannelDataEvent(
               channel_id=channel.local_id,
               chunk=message.data,
+            ),
+          )
+
+        case ChannelWindowAdjustMessage():
+          if channel.remote_remaining_window_size > (2**32 - 1) - message.bytes_to_add:
+            raise ProtocolError
+
+          channel.remote_remaining_window_size += message.bytes_to_add
+
+          self._events.append(
+            ChannelWindowAdjustEvent(
+              channel_id=channel.local_id,
             ),
           )
 
@@ -739,6 +753,8 @@ class SansIOConnection:
                 channel.dead = True
 
               def write(chunk: bytes):
+                assert len(chunk) <= channel.remote_remaining_window_size
+
                 if channel.dead:
                   return
 
@@ -748,6 +764,9 @@ class SansIOConnection:
                     data=chunk,
                   ),
                 )
+
+              def get_window_size():
+                return channel.remote_remaining_window_size
 
               def accept():
                 assert isinstance(message, ChannelRequestMessage)
@@ -762,7 +781,11 @@ class SansIOConnection:
                 channel.busy = False
                 self._receive_channel_messages(channel)
 
-                return Stream(exit=exit, write=write)
+                return Stream(
+                  exit=exit,
+                  write=write,
+                  _get_window_size=get_window_size,
+                )
 
               def reject():
                 self._send_or_queue_message(

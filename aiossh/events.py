@@ -63,6 +63,10 @@ class ChannelDataEvent:
 class ChannelEofEvent:
   channel_id: int
 
+@dataclass(slots=True)
+class ChannelWindowAdjustEvent:
+  channel_id: int
+
 
 @dataclass(slots=True)
 class SessionPTYOptions:
@@ -93,19 +97,25 @@ class SessionShellEvent:
 
 @dataclass(slots=True)
 class Stream:
-    exit: Callable[[int], None]
-    write: Callable[[bytes], None]
+  exit: Callable[[int], None]
+  write: Callable[[bytes], None]
+  _get_window_size: Callable[[], int]
+
+  @property
+  def window_size(self):
+    return self._get_window_size()
 
 
 type Event = (
-    AuthWithPasswordRequestEvent
-    | AuthWithPublicKeyRequestEvent
-    | DisconnectEvent
-    | ExchangedKeysEvent
-    | ChannelCloseEvent
-    | ChannelEofEvent
-    | ChannelOpenEvent
-    | ChannelDataEvent
-    | SessionExecEvent
-    | SessionShellEvent
+  AuthWithPasswordRequestEvent
+  | AuthWithPublicKeyRequestEvent
+  | DisconnectEvent
+  | ExchangedKeysEvent
+  | ChannelCloseEvent
+  | ChannelEofEvent
+  | ChannelOpenEvent
+  | ChannelDataEvent
+  | ChannelWindowAdjustEvent
+  | SessionExecEvent
+  | SessionShellEvent
 )

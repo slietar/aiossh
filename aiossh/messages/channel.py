@@ -154,10 +154,11 @@ class ChannelCloseMessage(AutoCodableMessage):
   recipient_channel_id: int
 
 
-type OpenChannelMessage = (
+type ChannelMessage = (
     ChannelRequestMessage
   | ChannelOpenConfirmationMessage
   | ChannelOpenFailureMessage
+  | ChannelWindowAdjustMessage
   | ChannelDataMessage
   | ChannelExtendedDataMessage
   | ChannelEofMessage

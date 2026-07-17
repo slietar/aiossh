@@ -3,7 +3,7 @@ import logging
 import os
 import pickle
 import signal
-from asyncio import Event, StreamReader
+from asyncio import Event
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -26,7 +26,7 @@ from .events import (
 )
 from .public.base import PrivateKey
 from .public.rsa import RSAPrivateKey
-from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess, iter_reader
+from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess
 
 
 LOGGER = logging.getLogger(__name__)
@@ -103,13 +103,19 @@ class Shell:
         assert self.subprocess is not None
         assert self.stream is not None
 
-        async for chunk in iter_reader(self.subprocess.reader):
+        while True:
+          chunk = await self.subprocess.reader.read(self.stream.window_size)
+
+          if not chunk:
+            break
+
           self.stream.write(chunk)
           self.trigger.set()
 
       async with asyncio.TaskGroup() as group:
         group.create_task(pipe_subprocess_to_stdout())
         # group.create_task(watch_terminal_size(session))
+
 
     LOGGER.debug(f'Subprocess exited with code {self.subprocess.code}')
 
@@ -146,13 +152,13 @@ async def main():
         await send_trigger.wait()
         send_trigger.clear()
 
-    async with aiodrive.volatile_task_group() as group:
-      group.create_task(send_loop())
+    try:
+      async with aiodrive.volatile_task_group() as group:
+        group.create_task(send_loop())
 
-      while True:
-        # LOGGER.debug('Enumerating events...')
+        while True:
+          # LOGGER.debug('Enumerating events...')
 
-        try:
           for event in conn.events():
             match event:
               case DisconnectEvent(reason=reason, description=description):
@@ -209,9 +215,9 @@ async def main():
 
           conn.feed(chunk)
           send_trigger.set()
-        except ConnectionTerminatedError:
-          LOGGER.debug('Connection terminated error')
-          break
+
+    except* ConnectionTerminatedError:
+      LOGGER.debug('Connection terminated error')
 
     LOGGER.debug(f'Closing connection from {tcp_connection.client_name}')
 
