@@ -26,7 +26,6 @@ from .events import (
   ChannelDataEvent,
   ChannelEofEvent,
   ChannelOpenEvent,
-  DataEvent,
   DisconnectEvent,
   Event,
   ExchangedKeysEvent,
@@ -238,18 +237,25 @@ class SansIOConnection:
 
 
   def events(self) -> Iterator[Event]:
-    # Not checking whether terminated in order to send DisconnectMessage to the
-    # client
+    if self._terminated:
+      raise ConnectionTerminatedError
 
     while True:
-      if self._send_buffer:
-        buffer = self._send_buffer
-        self._send_buffer = b''
-        yield DataEvent(buffer)
-      elif self._events:
+      if self._events:
         yield self._events.popleft()
       else:
         break
+
+  def get_send_buffer(self, max_size: Optional[int] = None):
+    # Not checking whether terminated in order to send DisconnectMessage to the
+    # client
+
+    size = max_size if max_size is not None else len(self._send_buffer)
+    returned_buffer = self._send_buffer[:size]
+    self._send_buffer = self._send_buffer[size:]
+
+    return returned_buffer
+
 
   def feed(self, chunk: bytes, /):
     if self._terminated:

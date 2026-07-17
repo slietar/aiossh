@@ -21,10 +21,6 @@ class AuthWithPublicKeyRequestEvent:
   respond: Callable[[bool], None]
 
 @dataclass(slots=True)
-class DataEvent:
-  chunk: bytes
-
-@dataclass(slots=True)
 class DisconnectEvent:
   reason: int
   description: str
@@ -104,7 +100,6 @@ class Stream:
 type Event = (
     AuthWithPasswordRequestEvent
     | AuthWithPublicKeyRequestEvent
-    | DataEvent
     | DisconnectEvent
     | ExchangedKeysEvent
     | ChannelCloseEvent

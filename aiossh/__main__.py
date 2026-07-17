@@ -3,6 +3,7 @@ import logging
 import os
 import pickle
 import signal
+from asyncio import Event, StreamReader
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -18,7 +19,6 @@ from .events import (
   ChannelDataEvent,
   ChannelEofEvent,
   ChannelOpenEvent,
-  DataEvent,
   DisconnectEvent,
   SessionExecEvent,
   SessionShellEvent,
@@ -135,21 +135,26 @@ async def main():
     )
 
     shells = dict[int, Shell]()
-    trigger = asyncio.Event()
+    send_trigger = Event()
+
+    async def send_loop():
+      while True:
+        while (chunk := conn.get_send_buffer(65_536)):
+          tcp_connection.writer.write(chunk)
+          await tcp_connection.writer.drain()
+
+        await send_trigger.wait()
+        send_trigger.clear()
 
     async with aiodrive.volatile_task_group() as group:
+      group.create_task(send_loop())
+
       while True:
         # LOGGER.debug('Enumerating events...')
 
         try:
-          trigger.clear()
-
           for event in conn.events():
             match event:
-              case DataEvent(chunk):
-                tcp_connection.writer.write(chunk)
-                await tcp_connection.writer.drain()
-
               case DisconnectEvent(reason=reason, description=description):
                 LOGGER.info(f'Disconnect event with reason {reason} and description "{description}"')
                 return
@@ -170,12 +175,12 @@ async def main():
               case SessionExecEvent(command=command):
                 LOGGER.info(f'Session exec request with command "{command}"')
 
-                shell = Shell(trigger=trigger)
+                shell = Shell(trigger=send_trigger)
                 shells[event.channel_id] = shell
 
                 group.create_task(shell.start(event))
               case SessionShellEvent():
-                shell = Shell(trigger=trigger)
+                shell = Shell(trigger=send_trigger)
                 shells[event.channel_id] = shell
 
                 group.create_task(shell.start(event))
@@ -194,10 +199,7 @@ async def main():
                 LOGGER.info(f'Event: {event}')
 
           try:
-            index, chunk = await aiodrive.race(
-              tcp_connection.reader.read(65_536),
-              trigger.wait(),
-            )
+            chunk = await tcp_connection.reader.read(65_536)
           except asyncio.CancelledError:
             conn.close()
             raise
@@ -205,12 +207,8 @@ async def main():
             LOGGER.info('Connection error')
             return
 
-          if index == 0:
-            if not chunk:
-              break
-
-            assert isinstance(chunk, bytes)
-            conn.feed(chunk)
+          conn.feed(chunk)
+          send_trigger.set()
         except ConnectionTerminatedError:
           LOGGER.debug('Connection terminated error')
           break
