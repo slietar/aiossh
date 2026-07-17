@@ -90,6 +90,7 @@ LOGGER = logging.getLogger(__name__)
 
 INITIAL_WINDOW_SIZE = 65_536
 HIGH_WINDOW_SIZE_WATERMARK = 32_768
+MAX_DATA_MESSAGE_SIZE = 10
 
 
 @dataclass(kw_only=True, slots=True)
@@ -116,7 +117,9 @@ class Channel:
   local_id: int
   remote_id: int
 
-  max_packet_size: int
+  local_max_packet_size: int
+  remote_max_packet_size: int
+
   local_remaining_window_size: int
   remote_remaining_window_size: int
 
@@ -556,9 +559,8 @@ class SansIOConnection:
           if message.window_size == 0:
             raise ProtocolError
 
-          # TODO: Find appropriate value
-          # if message.max_packet_size == 0:
-          #   raise ProtocolError
+          if message.max_packet_size == 0:
+            raise ProtocolError
 
           match message.details:
             case ChannelOpenDetailsSession():
@@ -579,7 +581,9 @@ class SansIOConnection:
               local_id=self._next_channel_id,
               remote_id=message.sender_channel_id,
 
-              max_packet_size=message.max_packet_size,
+              local_max_packet_size=MAX_DATA_MESSAGE_SIZE,
+              remote_max_packet_size=message.max_packet_size,
+
               local_remaining_window_size=INITIAL_WINDOW_SIZE,
               remote_remaining_window_size=message.window_size,
             )
@@ -591,7 +595,7 @@ class SansIOConnection:
                 recipient_channel_id=message.sender_channel_id,
                 sender_channel_id=channel_id,
                 window_size=channel.local_remaining_window_size,
-                max_packet_size=message.max_packet_size,
+                max_packet_size=channel.local_max_packet_size,
               ),
             )
 
@@ -681,6 +685,9 @@ class SansIOConnection:
 
       match message:
         case ChannelDataMessage():
+          if len(message.data) > channel.local_max_packet_size:
+            raise ProtocolError
+
           channel.local_remaining_window_size -= len(message.data)
 
           if channel.local_remaining_window_size < 0:
@@ -752,18 +759,24 @@ class SansIOConnection:
 
                 channel.dead = True
 
-              def write(chunk: bytes):
-                assert len(chunk) <= channel.remote_remaining_window_size
+              def write(buffer: bytes):
+                assert len(buffer) <= channel.remote_remaining_window_size
 
                 if channel.dead:
                   return
 
-                self._send_or_queue_message(
-                  ChannelDataMessage(
-                    recipient_channel_id=channel.remote_id,
-                    data=chunk,
-                  ),
-                )
+                current_buffer = buffer
+
+                while current_buffer:
+                  chunk = current_buffer[:channel.remote_max_packet_size]
+                  current_buffer = current_buffer[channel.remote_max_packet_size:]
+
+                  self._send_or_queue_message(
+                    ChannelDataMessage(
+                      recipient_channel_id=channel.remote_id,
+                      data=chunk,
+                    ),
+                  )
 
               def get_window_size():
                 return channel.remote_remaining_window_size
