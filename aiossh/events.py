@@ -98,6 +98,7 @@ class SessionShellEvent:
 @dataclass(slots=True)
 class Stream:
   exit: Callable[[int], None]
+  reset_window: Callable[[], None]
   write: Callable[[bytes], None]
   _get_window_size: Callable[[], int]
 

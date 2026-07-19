@@ -28,7 +28,7 @@ class Subprocess(ABC):
   reader: StreamReader
 
   @abstractmethod
-  def write(self, data: bytes, /):
+  async def write(self, data: bytes, /):
     raise NotImplementedError
 
 
@@ -45,7 +45,7 @@ class PTYSubprocess(Subprocess):
     fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, buf)
 
   @override
-  def write(self, data: bytes, /):
+  async def write(self, data: bytes, /):
     # TODO: Close when receving EOF
     os.write(self._master_fd, data)
 
@@ -104,9 +104,10 @@ class RegularSubprocess(Subprocess):
   code: Optional[int] = None
 
   @override
-  def write(self, data: bytes, /):
+  async def write(self, data: bytes, /):
     if data:
       self.process.stdin.write(data)
+      await self.process.stdin.drain()
     else:
       self.process.stdin.close()
 
@@ -154,7 +155,7 @@ async def main():
 
     async def pipe_stdin_to_pty(session: PTYSubprocess):
       async for chunk in iter_reader(stdin):
-        session.write(chunk)
+        await session.write(chunk)
 
     async def watch_terminal_size(session: PTYSubprocess):
       while True:

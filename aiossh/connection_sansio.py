@@ -89,8 +89,7 @@ from .structures.primitives import encode_mpint, encode_name_list, encode_string
 LOGGER = logging.getLogger(__name__)
 
 INITIAL_WINDOW_SIZE = 65_536
-HIGH_WINDOW_SIZE_WATERMARK = 32_768
-MAX_DATA_MESSAGE_SIZE = 10
+MAX_DATA_MESSAGE_SIZE = 10000
 
 
 @dataclass(kw_only=True, slots=True)
@@ -162,7 +161,7 @@ class SansIOConnection:
   _receive_buffer: bytes = field(default_factory=bytes, init=False)
   _send_buffer: bytes = field(default_factory=bytes, init=False)
   _events: deque[Event] = field(default_factory=deque, init=False)
-  _received_partial_packet: Optional[bytes] = field(default=None, init=False)
+  _unencrypted_packet_head: Optional[bytes] = field(default=None, init=False)
 
   _channels: dict[int, Channel] = field(default_factory=dict, init=False)
   _next_channel_id: int = field(default=865, init=False)
@@ -314,28 +313,39 @@ class SansIOConnection:
       digest_size_or_zero = self._integrity_verification_in.digest_size if self._integrity_verification_in is not None else 0
 
 
-      # Read packet length (without the length itself) or first block
+      # Packet description
+      #   uint32 packet length = payload length + padding length + 1
+      #   byte padding length
+      #   byte[] payload
+      #   byte[] random padding of arbitrary size
+      #   byte[] mac
+      #
+      # See: RFC 4253 Section 6
 
-      if self._received_partial_packet is None:
+      # Read packet length or first block
+
+      if self._unencrypted_packet_head is None:
         if self._encryption_in is not None:
-          self._received_partial_packet = self._receive(self._encryption_in.block_size())
-        else:
-          self._received_partial_packet = self._receive(packet_length_size)
+          encrypted_first_block = self._receive(self._encryption_in.block_size())
 
-      if self._received_partial_packet is None:
+          if encrypted_first_block is not None:
+            # Decryption is stateful and must there only happen once
+            self._unencrypted_packet_head = self._encryption_in.decrypt_blocks(encrypted_first_block)
+        else:
+          self._unencrypted_packet_head = self._receive(packet_length_size)
+
+      if self._unencrypted_packet_head is None:
         break
 
 
-      # Read rest of packet
-      # See: RFC 4253 Section 6
+      # Decode packet length
 
-      if self._encryption_in is not None:
-        partial_packet = self._encryption_in.decrypt_blocks(self._received_partial_packet)
-      else:
-        partial_packet = self._received_partial_packet
-
-      packet_length_bytes = partial_packet[:packet_length_size]
+      # Packet length is payload length + padding + 1 byte for the padding length
+      packet_length_bytes = self._unencrypted_packet_head[:packet_length_size]
       packet_length = struct.unpack('>I', packet_length_bytes)[0]
+
+      if packet_length > 100_000:
+        raise Exception('Packet length exceeds 100,000 bytes')
 
       # The packet must at least contain the padding length byte.
       if packet_length < padding_length_size:
@@ -345,38 +355,39 @@ class SansIOConnection:
       if packet_length_size + packet_length + digest_size_or_zero > 35_000:
         raise ProtocolError
 
-      if self._encryption_in is not None:
-        missing_block_count = (packet_length_size + packet_length - 1) // self._encryption_in.block_size()
-        missing_byte_count = self._encryption_in.block_size() * missing_block_count
-      else:
-        missing_byte_count = packet_length
+      # The packet length size and the packet length must be a multiple of the
+      # block size or 8, whichever is larger.
+      if (packet_length_size + packet_length) % max(block_size_or_zero, 8) != 0:
+        raise ProtocolError
 
+
+      # Read rest of packet
+
+      missing_byte_count = packet_length_size + packet_length - len(self._unencrypted_packet_head)
       rest = self._receive(missing_byte_count + digest_size_or_zero)
 
       if rest is None:
         break
 
-      self._received_partial_packet = None
-
       packet_rest = rest[:missing_byte_count]
       digest = rest[missing_byte_count:]
 
       if self._encryption_in is not None:
-        packet_with_length = partial_packet + self._encryption_in.decrypt_blocks(packet_rest)
+        packet_with_length = self._unencrypted_packet_head + self._encryption_in.decrypt_blocks(packet_rest)
         packet_after_length = packet_with_length[packet_length_size:]
       else:
         packet_after_length = packet_rest
-        packet_with_length = partial_packet + packet_after_length
+        packet_with_length = self._unencrypted_packet_head + packet_after_length
+
+      self._unencrypted_packet_head = None
 
       padding_length = packet_after_length[0]
       payload_length = packet_length - padding_length - padding_length_size
 
-      padding_alignment = max(block_size_or_zero, 8)
-
       # Packet size without the mac
       packet_size = packet_length_size + padding_length_size + payload_length + padding_length
 
-      if (payload_length < 0) or (packet_size % padding_alignment) != 0 or (packet_size < max(block_size_or_zero, 16)):
+      if (payload_length < 0) or (packet_size < max(block_size_or_zero, 16)):
         raise ProtocolError
 
       payload = packet_after_length[padding_length_size:(padding_length_size + payload_length)]
@@ -693,16 +704,6 @@ class SansIOConnection:
           if channel.local_remaining_window_size < 0:
             raise ProtocolError
 
-          if channel.local_remaining_window_size <= HIGH_WINDOW_SIZE_WATERMARK:
-            self._send_message(
-              ChannelWindowAdjustMessage(
-                recipient_channel_id=channel.remote_id,
-                bytes_to_add=(INITIAL_WINDOW_SIZE - channel.local_remaining_window_size),
-              ),
-            )
-
-            channel.local_remaining_window_size = INITIAL_WINDOW_SIZE
-
           self._events.append(
             ChannelDataEvent(
               channel_id=channel.local_id,
@@ -733,8 +734,7 @@ class SansIOConnection:
           match message.details:
             case ChannelRequestDetailsExec() | ChannelRequestDetailsShell():
               def exit(exit_status: int):
-                if channel.dead:
-                  return
+                assert not channel.dead
 
                 self._send_or_queue_message(
                   ChannelRequestMessage(
@@ -760,10 +760,8 @@ class SansIOConnection:
                 channel.dead = True
 
               def write(buffer: bytes):
+                assert not channel.dead
                 assert len(buffer) <= channel.remote_remaining_window_size
-
-                if channel.dead:
-                  return
 
                 current_buffer = buffer
 
@@ -779,7 +777,23 @@ class SansIOConnection:
                   )
 
               def get_window_size():
+                assert not channel.dead
                 return channel.remote_remaining_window_size
+
+              def reset_window():
+                assert not channel.dead
+
+                bytes_to_add = INITIAL_WINDOW_SIZE - channel.local_remaining_window_size
+
+                if bytes_to_add > 0:
+                  self._send_or_queue_message(
+                    ChannelWindowAdjustMessage(
+                      recipient_channel_id=channel.remote_id,
+                      bytes_to_add=bytes_to_add,
+                    ),
+                  )
+
+                  channel.local_remaining_window_size = INITIAL_WINDOW_SIZE
 
               def accept():
                 assert isinstance(message, ChannelRequestMessage)
@@ -796,6 +810,7 @@ class SansIOConnection:
 
                 return Stream(
                   exit=exit,
+                  reset_window=reset_window,
                   write=write,
                   _get_window_size=get_window_size,
                 )
