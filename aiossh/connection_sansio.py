@@ -45,6 +45,7 @@ from .messages.channel import (
   ChannelCloseMessage,
   ChannelDataMessage,
   ChannelEofMessage,
+  ChannelExtendedDataMessage,
   ChannelMessage,
   ChannelOpenConfirmationMessage,
   ChannelOpenDetailsSession,
@@ -52,6 +53,7 @@ from .messages.channel import (
   ChannelOpenFailureReason,
   ChannelOpenMessage,
   ChannelWindowAdjustMessage,
+  DataTypeCode,
 )
 from .messages.channel_request import (
   ChannelFailureMessage,
@@ -759,7 +761,7 @@ class SansIOConnection:
 
                 channel.dead = True
 
-              def write(buffer: bytes):
+              def write(buffer: bytes, *, error: bool = False):
                 assert not channel.dead
                 assert len(buffer) <= channel.remote_remaining_window_size
 
@@ -769,12 +771,19 @@ class SansIOConnection:
                   chunk = current_buffer[:channel.remote_max_packet_size]
                   current_buffer = current_buffer[channel.remote_max_packet_size:]
 
-                  self._send_or_queue_message(
-                    ChannelDataMessage(
+                  if error:
+                    message = ChannelExtendedDataMessage(
+                      recipient_channel_id=channel.remote_id,
+                      data_type_code=DataTypeCode.Stderr,
+                      data=chunk,
+                    )
+                  else:
+                    message = ChannelDataMessage(
                       recipient_channel_id=channel.remote_id,
                       data=chunk,
-                    ),
-                  )
+                    )
+
+                  self._send_or_queue_message(message)
 
               def get_window_size():
                 assert not channel.dead

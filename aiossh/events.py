@@ -95,11 +95,15 @@ class SessionShellEvent:
   reject: Callable[[], None]
 
 
+class StreamWriteProtocol(Protocol):
+  def __call__(self, data: bytes, /, *, error: bool = ...) -> None:
+    ...
+
 @dataclass(slots=True)
 class Stream:
   exit: Callable[[int], None]
   reset_window: Callable[[], None]
-  write: Callable[[bytes], None]
+  write: StreamWriteProtocol
   _get_window_size: Callable[[], int]
 
   @property

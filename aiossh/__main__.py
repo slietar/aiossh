@@ -66,7 +66,7 @@ class Shell:
   def recv_stdin_eof(self):
     self.queue.shutdown()
 
-  async def _pipe_subprocess_to_stdout(self):
+  async def _pipe_stdout(self):
     assert self.subprocess is not None
     assert self.stream is not None
 
@@ -77,6 +77,22 @@ class Shell:
         break
 
       self.stream.write(chunk)
+      self.send_trigger.set()
+
+  async def _pipe_stderr(self):
+    assert self.subprocess is not None
+    assert self.stream is not None
+
+    if self.subprocess.reader_error is None:
+      return
+
+    while True:
+      chunk = await self.subprocess.reader_error.read(self.stream.window_size)
+
+      if not chunk:
+        break
+
+      self.stream.write(chunk, error=True)
       self.send_trigger.set()
 
   async def _watch_stdin(self):
@@ -108,9 +124,7 @@ class Shell:
       subproc = PTYSubprocess.create(
         command,
         cwd=Path.home(),
-        env={
-          'TERM': 'xterm-256color',
-        },
+        env=event.env,
         terminal_size=os.terminal_size([
           event.pty.window_chars[0],
           event.pty.window_chars[1],
@@ -120,9 +134,7 @@ class Shell:
       subproc = RegularSubprocess.create(
         command,
         cwd=Path.home(),
-        env={
-          'TERM': 'xterm-256color',
-        },
+        env=event.env,
       )
 
     async with subproc as self.subprocess:
@@ -133,7 +145,8 @@ class Shell:
       self.send_trigger.set()
 
       async with asyncio.TaskGroup() as group:
-        group.create_task(self._pipe_subprocess_to_stdout())
+        group.create_task(self._pipe_stdout())
+        group.create_task(self._pipe_stderr())
         group.create_task(self._watch_stdin())
         # group.create_task(watch_terminal_size(session))
 

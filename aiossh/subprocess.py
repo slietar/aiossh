@@ -26,6 +26,7 @@ LOGGER = logging.getLogger(__name__)
 class Subprocess(ABC):
   code: Optional[int] = None
   reader: StreamReader
+  reader_error: Optional[StreamReader]
 
   @abstractmethod
   async def write(self, data: bytes, /):
@@ -37,6 +38,7 @@ class PTYSubprocess(Subprocess):
   _master_fd: int = field(repr=False)
   process: aiodrive.Process
   reader: StreamReader
+  reader_error: Optional[StreamReader]
 
   code: Optional[int] = None
 
@@ -78,7 +80,7 @@ class PTYSubprocess(Subprocess):
             os.fdopen(master_fd, mode='rb'),
           )
 
-          session = cls(master_fd, process, reader)
+          session = cls(master_fd, process, reader, reader_error=None)
           session.resize(terminal_size)
         except Exception as e:
           LOGGER.error(f'Failed to setup process + {e}')
@@ -100,6 +102,7 @@ class PTYSubprocess(Subprocess):
 class RegularSubprocess(Subprocess):
   process: aiodrive.Process
   reader: StreamReader
+  reader_error: Optional[StreamReader]
 
   code: Optional[int] = None
 
@@ -124,7 +127,7 @@ class RegularSubprocess(Subprocess):
 
     try:
       async with aiodrive.contextualize(wait()):
-        subprocess = cls(process, process.stdout)
+        subprocess = cls(process, process.stdout, reader_error=process.stderr)
         yield subprocess
     except aiodrive.ProcessTerminatedException as e: # TODO: Use except*
       LOGGER.info(f'Process terminated with code {e.code}')
