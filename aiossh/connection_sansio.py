@@ -32,6 +32,7 @@ from .events import (
   DisconnectEvent,
   Event,
   ExchangedKeysEvent,
+  PTYSessionTerminalSizeChangeEvent,
   SessionExecEvent,
   SessionPTYOptions,
   SessionShellEvent,
@@ -64,6 +65,7 @@ from .messages.channel_request import (
   ChannelRequestDetailsExitStatus,
   ChannelRequestDetailsPtyReq,
   ChannelRequestDetailsShell,
+  ChannelRequestDetailsWindowChange,
   ChannelRequestMessage,
   ChannelSuccessMessage,
 )
@@ -899,8 +901,23 @@ class SansIOConnection:
                   ),
                 )
 
+            case ChannelRequestDetailsWindowChange():
+              if not isinstance(channel.inner, SessionInnerChannel):
+                raise ProtocolError
+
+              if channel.inner.pty is None:
+                raise ProtocolError
+
+              self._events.append(
+                PTYSessionTerminalSizeChangeEvent(
+                  channel_id=channel.local_id,
+                  window_chars=(message.details.term_width_chars, message.details.term_height_chars),
+                  window_pixels=(message.details.term_width_pixels, message.details.term_height_pixels),
+                ),
+              )
+
             case _:
-              print('Not handled', message.details)
+              raise NotImplementedError
 
         case _:
           # typing.assert_never(message)
@@ -966,8 +983,7 @@ class SansIOConnection:
       or (algorithm_selection.mac_algorithm_client_to_server != client_kex_init.mac_algorithms_client_to_server[0])
       or (algorithm_selection.mac_algorithm_server_to_client != client_kex_init.mac_algorithms_server_to_client[0])
     ):
-      # TODO: Skip next packet
-      raise NotImplementedError
+      _ = yield
 
 
     # Run key exchange

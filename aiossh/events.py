@@ -94,6 +94,12 @@ class SessionShellEvent:
   accept: Callable[[], Stream]
   reject: Callable[[], None]
 
+@dataclass(slots=True)
+class PTYSessionTerminalSizeChangeEvent:
+  channel_id: int
+  window_chars: tuple[int, int]
+  window_pixels: tuple[int, int]
+
 
 class StreamWriteProtocol(Protocol):
   def __call__(self, data: bytes, /, *, error: bool = ...) -> None:
@@ -121,6 +127,7 @@ type Event = (
   | ChannelOpenEvent
   | ChannelDataEvent
   | ChannelWindowAdjustEvent
+  | PTYSessionTerminalSizeChangeEvent
   | SessionExecEvent
   | SessionShellEvent
 )

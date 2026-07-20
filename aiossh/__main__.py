@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import pickle
+import shlex
 import signal
 from asyncio import Event
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from .events import (
   ChannelEofEvent,
   ChannelOpenEvent,
   DisconnectEvent,
+  PTYSessionTerminalSizeChangeEvent,
   SessionExecEvent,
   SessionShellEvent,
   Stream,
@@ -66,6 +68,12 @@ class Shell:
   def recv_stdin_eof(self):
     self.queue.shutdown()
 
+  def set_terminal_size(self, rows: int, cols: int):
+    assert self.subprocess is not None
+    assert isinstance(self.subprocess, PTYSubprocess)
+
+    self.subprocess.resize(os.terminal_size([rows, cols]))
+
   async def _pipe_stdout(self):
     assert self.subprocess is not None
     assert self.stream is not None
@@ -95,7 +103,7 @@ class Shell:
       self.stream.write(chunk, error=True)
       self.send_trigger.set()
 
-  async def _watch_stdin(self):
+  async def _pipe_stdin(self):
     assert self.subprocess is not None
     assert self.stream is not None
 
@@ -116,7 +124,7 @@ class Shell:
       case SessionExecEvent():
         command = event.command
       case SessionShellEvent():
-        command = os.environ['SHELL']
+        command = shlex.join([os.environ['SHELL'], '-l'])
       case _:
         raise UnreachableError
 
@@ -147,8 +155,7 @@ class Shell:
       async with asyncio.TaskGroup() as group:
         group.create_task(self._pipe_stdout())
         group.create_task(self._pipe_stderr())
-        group.create_task(self._watch_stdin())
-        # group.create_task(watch_terminal_size(session))
+        group.create_task(self._pipe_stdin())
 
 
     LOGGER.debug(f'Subprocess exited with code {self.subprocess.code}')
@@ -237,6 +244,13 @@ async def main():
                 assert shell.stream is not None
 
                 shell.recv_stdin_eof()
+
+              case PTYSessionTerminalSizeChangeEvent():
+                shell = shells[event.channel_id]
+                assert shell.stream is not None
+
+                shell.set_terminal_size(event.window_chars[0], event.window_chars[1])
+
               case _:
                 LOGGER.info(f'Event: {event}')
 
