@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import functools
 import logging
@@ -14,6 +15,7 @@ from .algorithms import AlgorithmSelection, AlgorithmSets, extract
 from .encryption.base import Encryption
 from .encryption.resolve import resolve_encryption
 from .error import (
+  AlgorithmNegotiationError,
   ConnectionTerminatedError,
   ProtocolError,
   ProtocolVersionNotSupportedError,
@@ -466,16 +468,17 @@ class SansIOConnection:
             self._key_exchange = iter(self._run_key_exchange())
             next(self._key_exchange)
 
-          self._key_exchange.send(message_stub)
+          # The key exchange may stop at this point if algorithm negotiation
+          # fails
+          with contextlib.suppress(StopIteration):
+            self._key_exchange.send(message_stub)
 
         case _ if (message_stub.id == NewKeysMessage.id) or (30 <= message_stub.id <= 49):
           if self._key_exchange is None:
             raise ProtocolError
 
-          try:
+          with contextlib.suppress(StopIteration):
             self._key_exchange.send(message_stub)
-          except StopIteration:
-            pass
 
         case ExtInfoMessage.id:
           if self._encryption_in is None:
@@ -940,7 +943,16 @@ class SansIOConnection:
 
     # Negotiate algorithms
 
-    algorithm_selection = server_supported_algorithms.negotiate(client_kex_init)
+    try:
+      algorithm_selection = server_supported_algorithms.negotiate(client_kex_init)
+    except AlgorithmNegotiationError:
+      self._disconnect(
+        DisconnectReason.KeyExchangeFailed,
+        'Algorithm negotiation failed',
+      )
+
+      return
+
     host_key = next(key for key in self.settings.host_keys if algorithm_selection.server_host_key_algorithm in key.algorithms())
 
 
