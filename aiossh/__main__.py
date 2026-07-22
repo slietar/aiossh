@@ -137,6 +137,7 @@ class Shell:
           event.pty.window_chars[0],
           event.pty.window_chars[1],
         ]),
+        terminal_modes=event.pty.terminal_modes,
       )
     else:
       subproc = RegularSubprocess.create(

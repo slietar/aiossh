@@ -18,6 +18,7 @@ from typing import Optional, override
 import aiodrive
 
 from .stream import AsyncReadableStreamProtocol
+from .terminal_modes import TerminalModes, apply_terminal_modes
 
 
 LOGGER = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ class PTYSubprocess(Subprocess):
 
   @classmethod
   @contextlib.asynccontextmanager
-  async def create(cls, command: str, *, cwd: Path, env: Mapping[str, str], terminal_size: os.terminal_size):
+  async def create(cls, command: str, *, cwd: Path, env: Mapping[str, str], terminal_size: os.terminal_size, terminal_modes: TerminalModes):
     master_fd, slave_fd = pty.openpty()
 
     process = await aiodrive.start_process(
@@ -82,6 +83,7 @@ class PTYSubprocess(Subprocess):
 
           session = cls(master_fd, process, reader, reader_error=None)
           session.resize(terminal_size)
+          apply_terminal_modes(session._master_fd, terminal_modes)
         except Exception as e:
           LOGGER.error(f'Failed to setup process + {e}')
         else:
@@ -173,6 +175,7 @@ async def main():
         cwd=Path.home(),
         env=os.environ,
         terminal_size=os.get_terminal_size(),
+        terminal_modes=TerminalModes(),
       ) as session:
         print(f'Internal PID: {session.process.pid}')
         print('----')
