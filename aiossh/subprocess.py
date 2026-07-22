@@ -18,7 +18,8 @@ from typing import Optional, override
 import aiodrive
 
 from .stream import AsyncReadableStreamProtocol
-from .terminal_modes import TerminalModes, apply_terminal_modes
+from .terminal_modes import TerminalModes
+from .termios_modes import apply_terminal_modes
 
 
 LOGGER = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ class PTYSubprocess(Subprocess):
     try:
       async with aiodrive.contextualize(wait()):
         try:
+          apply_terminal_modes(slave_fd, terminal_modes)
           os.close(slave_fd)
 
           reader = await aiodrive.get_reader(
@@ -83,7 +85,6 @@ class PTYSubprocess(Subprocess):
 
           session = cls(master_fd, process, reader, reader_error=None)
           session.resize(terminal_size)
-          apply_terminal_modes(session._master_fd, terminal_modes)
         except Exception as e:
           LOGGER.error(f'Failed to setup process + {e}')
         else:
