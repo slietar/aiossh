@@ -6,11 +6,15 @@ from typing import Optional
 
 MIN_PADDING = 4
 
-def encode_packet(payload: bytes, *, block_size: Optional[int] = None):
+def encode_packet(payload: bytes, *, block_size: Optional[int] = None, length_field_size: int = 4):
+  # AEAD ciphers (length_field_size=0) encrypt the 4-byte length field
+  # separately and exclude it from the block-alignment target, unlike the
+  # base RFC 4253 scheme which includes it.
+
   actual_block_size = block_size or 8
   padding_length = 0
 
-  len_base = len(payload) + 5
+  len_base = len(payload) + 1 + length_field_size
   len_min_padded = len_base + MIN_PADDING
   len_padded = math.ceil(len_min_padded / actual_block_size) * actual_block_size
 

@@ -32,6 +32,8 @@ type EncryptionAlgorithmName = Literal[
   'aes128-ctr',
   'aes192-ctr',
   'aes256-ctr',
+  'chacha20-poly1305',
+  'chacha20-poly1305@openssh.com',
 ]
 
 type MacAlgorithmName = Literal[
