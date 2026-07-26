@@ -93,6 +93,37 @@ class ChaCha20Poly1305Handler(Handler):
 
     return payload_cipher.decryptor().update(encrypted_packet)
 
+  @override
+  def send(self, sequence_number: int, payload: bytes):
+    packet_with_length = encode_packet(payload, block_size=8, length_field_size=0)
+
+    raw_length = packet_with_length[:PACKET_LENGTH_SIZE]
+    raw_packet = packet_with_length[PACKET_LENGTH_SIZE:]
+
+    length_cipher = Cipher(
+      ChaCha20(self._length_key, self._nonce(0, sequence_number)),
+      mode=None,
+    )
+
+    encrypted_length = length_cipher.encryptor().update(raw_length)
+
+    payload_cipher = Cipher(
+      ChaCha20(self._payload_key, self._nonce(1, sequence_number)),
+      mode=None,
+    )
+
+    encrypted_packet = payload_cipher.encryptor().update(raw_packet)
+
+    tag_cipher = Cipher(
+      ChaCha20(self._payload_key, self._nonce(0, sequence_number)),
+      mode=None,
+    )
+
+    tag_key = tag_cipher.encryptor().update(b'\x00' * 32)
+    tag = Poly1305.generate_tag(tag_key, encrypted_length + encrypted_packet)
+
+    return encrypted_length + encrypted_packet + tag
+
 
 class NoneHandler(Handler):
   @override

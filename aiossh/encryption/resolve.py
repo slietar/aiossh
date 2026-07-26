@@ -32,7 +32,7 @@ def build_handler(
 ) -> Handler:
   if is_encryption_algorithm_aead(encryption_name):
     return ChaCha20Poly1305Handler(
-      key=derive_key(b'C' if input_mode else b'D', 32),
+      key=derive_key(b'C' if input_mode else b'D', 64),
     )
   else:
     ResolvedEncryption = resolve_encryption(encryption_name)
