@@ -17,8 +17,9 @@ from typing import Optional, override
 
 import aiodrive
 
-from .stream import AsyncReadableStreamProtocol
-from .terminal_modes import TerminalModes
+from siossh.stream import AsyncReadableStreamProtocol
+from siossh.terminal_modes import TerminalModes
+
 from .termios_modes import apply_terminal_modes
 
 

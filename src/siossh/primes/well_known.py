@@ -1,4 +1,4 @@
-from aiossh.primes.group import Group
+from src.siossh.primes.group import Group
 
 
 # See: RFC 2409 Section 6

@@ -7,9 +7,7 @@ from ..encoding import (
   CodableABC,
   Name,
   NameList,
-  OptionalAnnotation,
   UnionAnnotation,
-  get_class_encodings,
 )
 from ..structures.primitives import (
   decode_boolean,

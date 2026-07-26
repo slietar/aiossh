@@ -1,20 +1,55 @@
+[build-system]
+requires = ["oryn~=2.1"]
+build-backend = "oryn"
+
 [project]
 name = "aiossh"
 version = "0.0"
 requires-python = ">=3.14"
 dependencies = [
-    "aiodrive~=5.0",
+    "aiodrive~=5.1",
     "cryptography~=46.0",
     "umac~=2.0",
 ]
+
+[tool.oryn]
+include = ["src/*"]
 
 [tool.ruff]
 indent-width = 2
 
 [tool.ruff.lint]
 preview = true
-select = ["COM812", "COM818", "E", "F", "FURB", "I", "PTH", "Q", "RUF", "UP", "W"]
-ignore = ["E111", "E114", "E201", "E202", "E251", "E261", "E266", "E302", "E303", "E305", "E306", "E501", "E731", "RUF029", "UP045"]
+select = [
+    "missing-trailing-comma",
+    "trailing-comma-on-bare-tuple",
+    "E",
+    "F",
+    "FURB",
+    "I",
+    "PTH",
+    "Q",
+    "RUF",
+    "UP",
+    "W",
+]
+ignore = [
+    "blank-lines-after-function-or-class",
+    "blank-lines-before-nested-definition",
+    "blank-lines-top-level",
+    "indentation-with-invalid-multiple-comment",
+    "indentation-with-invalid-multiple",
+    "lambda-assignment",
+    "line-too-long",
+    "multiple-leading-hashes-for-block-comment",
+    "non-pep604-annotation-optional",
+    "too-few-spaces-before-inline-comment",
+    "too-many-blank-lines",
+    "unexpected-spaces-around-keyword-parameter-equals",
+    "unused-async",
+    "whitespace-after-open-bracket",
+    "whitespace-before-close-bracket",
+]
 
 [tool.ruff.lint.flake8-quotes]
 inline-quotes = "single"
@@ -22,3 +57,6 @@ multiline-quotes = "single"
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2
+
+# [tool.uv.sources]
+# aiodrive = { path = "../aiodrive", editable = true }

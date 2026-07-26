@@ -2,7 +2,7 @@ import dataclasses
 import termios
 from typing import Optional
 
-from .terminal_modes import TerminalModes
+from siossh.terminal_modes import TerminalModes
 
 
 IFLAG, OFLAG, CFLAG, LFLAG, ISPEED, OSPEED, CC = range(7)

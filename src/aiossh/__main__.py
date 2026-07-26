@@ -11,9 +11,9 @@ from typing import Optional
 
 import aiodrive
 
-from .connection import Connection, SansIOConnectionSettings
-from .error import ConnectionTerminatedError, UnreachableError
-from .events import (
+from siossh.connection import Connection, SansIOConnectionSettings
+from siossh.error import ConnectionTerminatedError, UnreachableError
+from siossh.events import (
   AuthWithPasswordRequestEvent,
   AuthWithPublicKeyRequestEvent,
   ChannelCloseEvent,
@@ -26,8 +26,9 @@ from .events import (
   SessionShellEvent,
   Stream,
 )
-from .public.base import PrivateKey
-from .public.rsa import RSAPrivateKey
+from siossh.public.base import PrivateKey
+from siossh.public.rsa import RSAPrivateKey
+
 from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess
 
 
