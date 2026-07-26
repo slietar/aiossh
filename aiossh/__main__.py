@@ -11,7 +11,7 @@ from typing import Optional
 
 import aiodrive
 
-from .connection_sansio import SansIOConnection, SansIOConnectionSettings
+from .connection import Connection, SansIOConnectionSettings
 from .error import ConnectionTerminatedError, UnreachableError
 from .events import (
   AuthWithPasswordRequestEvent,
@@ -173,7 +173,7 @@ async def main():
   async def tcp_handler(tcp_connection: aiodrive.Connection):
     LOGGER.debug(f'Incoming connection from {tcp_connection.client_name} to {tcp_connection.server_name}')
 
-    conn = SansIOConnection(
+    conn = Connection(
       debug=True,
       settings=SansIOConnectionSettings(
         host_keys=get_host_keys(),

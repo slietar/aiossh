@@ -7,7 +7,7 @@ from ..public.base import PrivateKey
 
 
 if TYPE_CHECKING:
-  from ..connection_sansio import SansIOConnection
+  from ..connection import Connection
 
 
 class KeyExchange(ABC):
@@ -16,7 +16,7 @@ class KeyExchange(ABC):
 
   def run_as_server(
     self,
-    conn: SansIOConnection,
+    conn: Connection,
     algorithm_selection: AlgorithmSelection,
     host_key: PrivateKey,
     hash_header: bytes,

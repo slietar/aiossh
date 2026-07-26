@@ -1,53 +1,67 @@
+import contextlib
+import copy
 import functools
 import logging
 import operator
-import struct
-from asyncio import StreamReader, StreamWriter, TaskGroup
-from collections.abc import Awaitable
+from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from pprint import pprint
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
-import aiodrive
-
-from .abstract.client import Client
-from .abstract.session import SessionExitSignal, SessionExitStatus
-from .algorithms import AlgorithmSelection, AlgorithmSets
-from .encryption.base import Encryption
-from .encryption.resolve import resolve_encryption
+from .algorithms import AlgorithmSelection, AlgorithmSets, extract
+from .encryption.resolve import build_handler
 from .error import (
   AlgorithmNegotiationError,
-  ConnectionClosedError,
+  ConnectionTerminatedError,
   IntegrityVerificationError,
   ProtocolError,
   ProtocolVersionNotSupportedError,
   UnreachableError,
 )
-from .flow import MessageFlow
-from .ident_string import IdentString
-from .integrity.base import IntegrityVerification
-from .integrity.resolve import (
-  resolve_integrity_verification,
+from .events import (
+  AuthWithPasswordRequestEvent,
+  AuthWithPublicKeyRequestEvent,
+  ChannelCloseEvent,
+  ChannelDataEvent,
+  ChannelEofEvent,
+  ChannelOpenEvent,
+  ChannelWindowAdjustEvent,
+  DisconnectEvent,
+  Event,
+  ExchangedKeysEvent,
+  PTYSessionTerminalSizeChangeEvent,
+  SessionExecEvent,
+  SessionPTYOptions,
+  SessionShellEvent,
+  Stream,
 )
+from .flow import MessageFlow, MessageStub
+from .handler import PADDING_LENGTH_SIZE, Handler, HandlerState, NoneHandler
+from .ident_string import IdentString
 from .key_exchange.resolve import resolve_key_exchange
-from .messages.base import EncodableMessage
+from .messages.base import Message
 from .messages.channel import (
   ChannelCloseMessage,
   ChannelDataMessage,
   ChannelEofMessage,
+  ChannelExtendedDataMessage,
+  ChannelMessage,
   ChannelOpenConfirmationMessage,
   ChannelOpenDetailsSession,
   ChannelOpenFailureMessage,
   ChannelOpenFailureReason,
   ChannelOpenMessage,
+  ChannelWindowAdjustMessage,
+  DataTypeCode,
 )
 from .messages.channel_request import (
   ChannelFailureMessage,
   ChannelRequestDetailsEnv,
-  ChannelRequestDetailsExitSignal,
+  ChannelRequestDetailsExec,
   ChannelRequestDetailsExitStatus,
   ChannelRequestDetailsPtyReq,
   ChannelRequestDetailsShell,
+  ChannelRequestDetailsWindowChange,
   ChannelRequestMessage,
   ChannelSuccessMessage,
 )
@@ -56,275 +70,1032 @@ from .messages.core import (
   DisconnectReason,
   ExtInfoMessage,
   NewKeysMessage,
-  UnimplementedMessage,
 )
 from .messages.key_exchange import KexInitMessage
 from .messages.service import ServiceAcceptMessage, ServiceRequestMessage
-from .messages.user_auth import UserAuthRequestMessage
-from .packet import encode_packet
+from .messages.user_auth import (
+  AuthenticationMethodName,
+  UserAuthFailureMessage,
+  UserAuthPublicKeyOk,
+  UserAuthRequestDetailsPassword,
+  UserAuthRequestDetailsPublicKey,
+  UserAuthRequestMessage,
+  UserAuthSuccessMessage,
+)
 from .public.base import PrivateKey
-from .reader import Reader
-from .session import Session, SessionActivity, SessionPTY
-from .stream import AsyncWritableStreamImpl
-from .structures.primitives import encode_mpint, encode_name_list
-from .user_auth import run_user_auth
+from .public.resolve import SignatureAlgorithmName
+from .structures.primitives import encode_mpint, encode_name_list, encode_string
+from .utilities import GeneratorWrapper
 
 
-if TYPE_CHECKING:
-  from .server import Server
+LOGGER = logging.getLogger(__name__)
+
+INITIAL_WINDOW_SIZE = 65_536
+MAX_DATA_MESSAGE_SIZE = 10000
 
 
-logger = logging.getLogger(__name__)
+@dataclass(kw_only=True, slots=True)
+class SansIOConnectionSettings:
+  host_keys: list[PrivateKey]
+  software_version: str
+  supported_algorithms: AlgorithmSets = field(default_factory=AlgorithmSets)
+  supported_auth_methods: list[AuthenticationMethodName]
 
 
+@dataclass(kw_only=True, slots=True)
+class Channel:
+  # True if we have received a request and are waiting for the consumer to act
+  # accordingly
+  busy: bool = False
+  queued_messages: deque[ChannelMessage] = field(default_factory=deque)
 
-# @dataclass(slots=True)
-# class DraftSessionPTY:
-#   term_name: bytes
-#   term_width_chars: int
-#   term_height_chars: int
-#   term_width_pixels: int
-#   term_height_pixels: int
-#   term_modes: TerminalModes
+  # True if we have sent a SSH_MSG_CHANNEL_CLOSE and are waiting for the remote
+  # side to send a SSH_MSG_CHANNEL_CLOSE
+  dead: bool = False
 
-# @dataclass(slots=True)
-# class DraftSession:
-#   env: dict[str, str] = field(default_factory=dict)
-#   pty: Optional[DraftSessionPTY] = None
+  inner: SessionInnerChannel
+
+  local_id: int
+  remote_id: int
+
+  local_max_packet_size: int
+  remote_max_packet_size: int
+
+  local_remaining_window_size: int
+  remote_remaining_window_size: int
+
+@dataclass(slots=True)
+class SessionInnerChannel:
+  env: dict[str, str] = field(default_factory=dict, init=False)
+  pty: Optional[SessionPTYOptions] = field(default=None, init=False)
 
 
-@dataclass(repr=False, slots=True)
+@dataclass(kw_only=True)
 class Connection:
-  server: Server
-  client: Client
+  debug: bool
+  settings: SansIOConnectionSettings
 
-  reader: StreamReader
-  writer: StreamWriter
+  _authenticated: bool = field(default=False, init=False)
+  _terminated: bool = field(default=False, init=False)
 
-  debug: bool = True
+  _client_ident_string: Optional[IdentString] = field(default=None, init=False)
+  _server_ident_string: IdentString = field(init=False)
 
-  client_ident_string: Optional[IdentString] = field(default=None, init=False)
-  server_ident_string: Optional[IdentString] = field(default=None, init=False)
+  _sequence_number_in: int = field(default=0, init=False)
+  _sequence_number_out: int = field(default=0, init=False)
+  _session_id: Optional[bytes] = field(default=None, init=False)
 
-  algorithm_selection: Optional[AlgorithmSelection] = field(default=None, init=False)
-  encryption_in: Optional[Encryption] = field(default=None, init=False)
-  encryption_out: Optional[Encryption] = field(default=None, init=False)
-  host_key: Optional[PrivateKey] = field(default=None, init=False)
-  integrity_verification_in: Optional[IntegrityVerification] = field(default=None, init=False)
-  integrity_verification_out: Optional[IntegrityVerification] = field(default=None, init=False)
+  # Initialized after key exchange is complete
+  _transmitted_byte_count: int = field(init=False)
 
-  sequence_number_in: int = field(default=0, init=False)
-  sequence_number_out: int = field(default=0, init=False)
-  session_id: Optional[bytes] = None
+  _key_exchange: Optional[MessageFlow[None]] = field(default=None, init=False)
 
-  authenticated: bool = False
-  key_exchange_flow: Optional[MessageFlow] = None
-  user_auth_flow: Optional[MessageFlow] = None
+  # Queue of messages that cannot be sent to due to an ongoing key exchange
+  _queued_messages: list[Message] = field(default_factory=list, init=False)
 
-  next_session_id: int = field(default=8345, init=False)
-  sessions: dict[int, Session] = field(default_factory=dict, init=False)
+  _algorithm_selection: Optional[AlgorithmSelection] = field(default=None, init=False)
+  _host_key: Optional[PrivateKey] = field(default=None, init=False)
 
+  _handler_in: Handler = field(default_factory=NoneHandler, init=False)
+  _handler_out: Handler = field(default_factory=NoneHandler, init=False)
+  _handler_state_in: Optional[HandlerState] = field(default=None, init=False)
 
-  async def read(self, byte_count: int, /):
-    # The read byte count may be zero.
+  _receive_buffer: bytes = field(default_factory=bytes, init=False)
+  _send_buffer: bytes = field(default_factory=bytes, init=False)
+  _events: deque[Event] = field(default_factory=deque, init=False)
 
-    data = b''
+  _encrypted_packet_head: Optional[bytes] = field(default=None, init=False)
+  _unencrypted_packet_head: Optional[bytes] = field(default=None, init=False)
 
-    while len(data) < byte_count:
-      try:
-        chunk = await self.reader.read(byte_count - len(data))
-      except ConnectionError as e: # Parent class of BrokenPipeError, ConnectionResetError, and others
-        raise ConnectionClosedError from e
+  _channels: dict[int, Channel] = field(default_factory=dict, init=False)
+  _next_channel_id: int = field(default=865, init=False)
 
-      if not chunk:
-        raise ConnectionClosedError
-
-      data += chunk
-
-    return data
-
-
-  async def read_message(self):
-    block_size_or_zero = self.encryption_in.block_size() if self.encryption_in is not None else 0
-    digest_size_or_zero = self.integrity_verification_in.digest_size if self.integrity_verification_in is not None else 0
-
-
-    # Read packet length (without the length itself) or first block
-
-    packet_length_size = 4
-    padding_length_size = 1
-
-    if self.encryption_in is not None:
-      packet_with_length = self.encryption_in.decrypt_blocks(
-        await self.read(self.encryption_in.block_size()),
-      )
-    else:
-      packet_with_length = await self.read(packet_length_size)
-
-
-    # Read rest of packet
-    # See: RFC 4253 Section 6
-
-    packet_length_bytes = packet_with_length[:packet_length_size]
-    packet_length = struct.unpack('>I', packet_length_bytes)[0]
-
-    # The packet must at least contain the padding length byte.
-    if packet_length < padding_length_size:
-      raise ProtocolError
-
-    # The total packet size, with length and MAC, must not exceed 35,000 bytes.
-    if packet_length_size + packet_length + digest_size_or_zero > 35000:
-      raise ProtocolError
-
-    if self.encryption_in is not None:
-      missing_block_count = (packet_length_size + packet_length - 1) // self.encryption_in.block_size()
-      packet_with_length += self.encryption_in.decrypt_blocks(
-        await self.read(self.encryption_in.block_size() * missing_block_count),
-      )
-
-      packet_after_length = packet_with_length[packet_length_size:]
-    else:
-      packet_after_length = await self.read(packet_length)
-      packet_with_length += packet_after_length
-
-    padding_length = packet_after_length[0]
-    payload_length = packet_length - padding_length - padding_length_size
-
-    padding_alignment = max(block_size_or_zero, 8)
-
-    # Packet size without the mac
-    packet_size = packet_length_size + padding_length_size + payload_length + padding_length
-
-    if (payload_length < 0) or (packet_size % padding_alignment) != 0 or (packet_size < max(block_size_or_zero, 16)):
-      raise ProtocolError
-
-    payload = packet_after_length[padding_length_size:(padding_length_size + payload_length)]
-
-    # TODO: Compression + check if uncompressed size is < 32,768 bytes (RFC 4253 Section 6.1)
-
-
-    # Verify integrity using MAC
-    # See: RFC 4253 Section 6.4
-
-    sequence_number = self.sequence_number_in
-
-    if self.integrity_verification_in is not None:
-      expected_digest = await self.read(self.integrity_verification_in.digest_size)
-
-      self.integrity_verification_in.start(sequence_number)
-      self.integrity_verification_in.update(packet_with_length)
-      produced_digest = self.integrity_verification_in.digest()
-
-      if expected_digest != produced_digest:
-        raise IntegrityVerificationError
-
-
-    # Return payload
-
-    self.sequence_number_in += 1
-
-    return payload, sequence_number
-
-  def write_message(self, message: EncodableMessage):
-    payload = message.encode_payload()
-    sized_packet = encode_packet(
-      payload,
-      block_size=(self.encryption_out.block_size() if self.encryption_out else None),
+  def __post_init__(self):
+    self._server_ident_string = IdentString(
+      comment=None,
+      software_version=self.settings.software_version,
     )
 
-    if self.encryption_out is not None:
-      self.writer.write(self.encryption_out.encrypt_blocks(sized_packet))
-    else:
-      self.writer.write(sized_packet)
+    self._send(bytes(self._server_ident_string) + b'\r\n')
 
-    if self.integrity_verification_out is not None:
-      self.integrity_verification_out.start(self.sequence_number_out)
-      self.integrity_verification_out.update(sized_packet)
-      self.writer.write(self.integrity_verification_out.digest())
+  @functools.cached_property
+  def _dh_groups(self):
+    from .primes.well_known import groups as well_known_dh_groups
+    return well_known_dh_groups
 
-    self.sequence_number_out += 1
+  def _receive(self, length: int, /):
+    if len(self._receive_buffer) < length:
+      return None
+
+    chunk = self._receive_buffer[:length]
+    self._receive_buffer = self._receive_buffer[length:]
+
+    return chunk
+
+  def _send(self, chunk: bytes, /):
+    self._send_buffer += chunk
+
+  def _send_message(self, message: Message):
+    payload = message.encode_payload()
+
+    self._send(self._handler_out.send(self._sequence_number_out, payload))
+    self._sequence_number_out += 1
 
     # Return payload because the KexInit message payload is reused for key exchange
     return payload
 
-
-  async def run_key_exchange(self):
-    # See: RFC 4253 Section 7
-
-    # Create key exchange flow
-
-    assert self.key_exchange_flow is None
-    self.key_exchange_flow = MessageFlow()
-    read_message = self.key_exchange_flow.read
+  def _send_or_queue_message(self, message: Message):
+    if self._key_exchange is not None:
+      self._queued_messages.append(message)
+    else:
+      self._send_message(message)
 
 
-    # Send server KexInit message
+  def close(self):
+    # This does yield a DisconnectEvent
 
-    supported_algorithms = AlgorithmSets()
-    supported_algorithms.server_host_key_algorithms &= functools.reduce(operator.or_, (key.algorithms() for key in self.server.host_keys))
+    if self._terminated:
+      raise ConnectionTerminatedError
 
-    server_kex_init = KexInitMessage(
-      kex_algorithms=['ext-info-s', *supported_algorithms.kex_algorithms],
-      server_host_key_algorithms=list(supported_algorithms.server_host_key_algorithms),
-      encryption_algorithms_client_to_server=list(supported_algorithms.encryption_algorithms_client_to_server),
-      encryption_algorithms_server_to_client=list(supported_algorithms.encryption_algorithms_server_to_client),
-      mac_algorithms_client_to_server=list(supported_algorithms.mac_algorithms_client_to_server),
-      mac_algorithms_server_to_client=list(supported_algorithms.mac_algorithms_server_to_client),
-      compression_algorithms_client_to_server=list(supported_algorithms.compression_algorithms_client_to_server),
-      compression_algorithms_server_to_client=list(supported_algorithms.compression_algorithms_server_to_client),
-      languages_client_to_server=[],
-      languages_server_to_client=[],
-      first_kex_packet_follows=False,
+    LOGGER.debug('Disconnected by server')
+
+    self._disconnect(
+      DisconnectReason.ByApplication,
+      'Connection closed by application',
     )
 
-    server_kex_init_payload = self.write_message(server_kex_init)
-    read_client_kex_init = read_message(KexInitMessage)
+  def trigger_key_exchange(self):
+    if self._terminated:
+      raise ConnectionTerminatedError
+
+    if self._client_ident_string is None:
+      raise RuntimeError('Key exchange cannot be run before the client identification string is received')
+
+    if self._key_exchange is not None:
+      return
+
+    self._key_exchange = iter(self._run_key_exchange())
+    next(self._key_exchange)
 
 
-    # Read client KexInit message
+  def events(self) -> Iterator[Event]:
+    if self._terminated:
+      raise ConnectionTerminatedError
 
-    client_kex_init, client_kex_init_payload = await read_client_kex_init
+    while True:
+      if self._events:
+        yield self._events.popleft()
+      else:
+        break
+
+  def get_send_buffer(self, max_size: Optional[int] = None):
+    # Not checking whether terminated in order to send DisconnectMessage to the
+    # client
+
+    size = max_size if max_size is not None else len(self._send_buffer)
+    returned_buffer = self._send_buffer[:size]
+    self._send_buffer = self._send_buffer[size:]
+
+    return returned_buffer
+
+
+  def feed(self, chunk: bytes, /):
+    if self._terminated:
+      raise ConnectionTerminatedError
+
+    self._receive_buffer += chunk
+
+    if not self._receive_buffer:
+      return
+
+    if self._client_ident_string is None:
+      # See: RFC 4253 Section 4.2
+      max_terminated_ident_string_length = 255
+
+      try:
+        termination_index = self._receive_buffer[:max_terminated_ident_string_length].index(b'\r\n')
+      except ValueError:
+        if len(self._receive_buffer) >= max_terminated_ident_string_length:
+          raise ProtocolError
+
+        return
+
+      client_ident_string_unterminated = self._receive_buffer[:termination_index]
+      self._receive_buffer = self._receive_buffer[(termination_index + 2):]
+
+      try:
+        # `client_ident_string_unterminated` already excludes CRLF.
+        self._client_ident_string = IdentString.decode(client_ident_string_unterminated)
+      except ProtocolVersionNotSupportedError:
+        self._disconnect(
+          DisconnectReason.ProtocolVersionNotSupported,
+          'Protocol version not supported',
+        )
+
+        return
+
+      LOGGER.debug(f'Client version: "{self._client_ident_string.software_version}"')
+
+      self._key_exchange = iter(self._run_key_exchange())
+      next(self._key_exchange)
+
+
+    while True:
+      if self._handler_state_in is None:
+        generator = GeneratorWrapper(self._handler_in.receive(self._sequence_number_in))
+
+        self._handler_state_in = HandlerState(
+          generator=generator,
+          requested_size=next(generator),
+        )
+      else:
+        generator = self._handler_state_in.generator
+
+      try:
+        while True:
+          response = self._receive(self._handler_state_in.requested_size)
+
+          if response is None:
+            return
+
+          try:
+            self._handler_state_in.requested_size = generator.send(response)
+          except StopIteration:
+            self._handler_state_in = None
+            packet = generator.value
+            break
+      except IntegrityVerificationError:
+        self._disconnect(
+          DisconnectReason.MacError,
+          'MAC error',
+        )
+
+        break
+
+
+      # Return payload
+
+      padding_length = packet[0]
+      payload = packet[PADDING_LENGTH_SIZE:-padding_length]
+
+      if len(payload) > 32_768:
+        raise ProtocolError
+
+      # if (payload_length < 0) or (packet_size < max(block_size_or_zero, 16)):
+      #   raise ProtocolError
+
+      sequence_number = self._sequence_number_in
+      self._sequence_number_in += 1
+
+      self._receive_message(
+        MessageStub(payload),
+        sequence_number,
+      )
+
+    # return
+
+
+    # while True:
+    #   packet_length_size = 4
+    #   padding_length_size = 1
+
+    #   is_aead_in = isinstance(self._encryption_in, AEADEncryption)
+
+    #   block_size_or_zero = 0 if is_aead_in else (self._encryption_in.block_size() if self._encryption_in is not None else 0)
+    #   digest_size_or_zero = self._encryption_in.tag_size() if is_aead_in else (self._integrity_verification_in.digest_size if self._integrity_verification_in is not None else 0)
+
+
+    #   # Packet description
+    #   #   uint32 packet length = payload length + padding length + 1
+    #   #   byte padding length
+    #   #   byte[] payload
+    #   #   byte[] random padding of arbitrary size
+    #   #   byte[] mac
+    #   #
+    #   # See: RFC 4253 Section 6
+
+    #   # Read packet length or first block
+
+    #   if self._unencrypted_packet_head is None:
+    #     match self._encryption_in:
+    #       case AEADEncryption():
+    #         encrypted_length = self._receive(packet_length_size)
+
+    #         if encrypted_length is not None:
+    #           self._encrypted_packet_head = encrypted_length
+    #           self._unencrypted_packet_head = self._encryption_in.decrypt_length(self._sequence_number_in, encrypted_length)
+    #       case Encryption():
+    #         encrypted_first_block = self._receive(self._encryption_in.block_size())
+
+    #         if encrypted_first_block is not None:
+    #           # Decryption is stateful and must there only happen once
+    #           self._unencrypted_packet_head = self._encryption_in.decrypt_blocks(encrypted_first_block)
+    #       case _:
+    #         self._unencrypted_packet_head = self._receive(packet_length_size)
+
+    #   if self._unencrypted_packet_head is None:
+    #     break
+
+    #   unencrypted_packet_head = self._unencrypted_packet_head
+
+
+    #   # Decode packet length
+
+    #   # Packet length is payload length + padding + 1 byte for the padding length
+    #   packet_length_bytes = unencrypted_packet_head[:packet_length_size]
+    #   packet_length = struct.unpack('>I', packet_length_bytes)[0]
+
+    #   if packet_length > 100_000:
+    #     raise Exception('Packet length exceeds 100,000 bytes')
+
+    #   # The packet must at least contain the padding length byte.
+    #   if packet_length < padding_length_size:
+    #     raise ProtocolError
+
+    #   # The total packet size, with length and MAC, must not exceed 35,000 bytes.
+    #   if packet_length_size + packet_length + digest_size_or_zero > 35_000:
+    #     raise ProtocolError
+
+    #   # The packet length size and the packet length must be a multiple of the
+    #   # block size or 8, whichever is larger. AEAD ciphers encrypt the
+    #   # length field separately and exclude it from this alignment target.
+    #   alignment_target = packet_length if is_aead_in else (packet_length_size + packet_length)
+
+    #   if alignment_target % max(block_size_or_zero, 8) != 0:
+    #     raise ProtocolError
+
+
+    #   # Read rest of packet
+
+    #   missing_byte_count = packet_length_size + packet_length - len(unencrypted_packet_head)
+    #   rest = self._receive(missing_byte_count + digest_size_or_zero)
+
+    #   if rest is None:
+    #     break
+
+    #   packet_rest = rest[:missing_byte_count]
+    #   digest = rest[missing_byte_count:]
+
+    #   if is_aead_in:
+    #     try:
+    #       decrypted_rest = self._encryption_in.decrypt_and_verify_packet(
+    #         self._sequence_number_in,
+    #         self._encrypted_packet_head,
+    #         packet_rest,
+    #         digest,
+    #       )
+    #     except InvalidSignature:
+    #       self._disconnect(
+    #         DisconnectReason.MacError,
+    #         'MAC error',
+    #       )
+
+    #       return
+
+    #     packet_with_length = self._unencrypted_packet_head + decrypted_rest
+    #     packet_after_length = decrypted_rest
+    #     self._encrypted_packet_head = None
+    #     self._unencrypted_packet_head = None
+    #   elif self._encryption_in is not None:
+    #     packet_with_length = self._unencrypted_packet_head + self._encryption_in.decrypt_blocks(packet_rest)
+    #     packet_after_length = packet_with_length[packet_length_size:]
+    #     self._unencrypted_packet_head = None
+    #   else:
+    #     packet_after_length = packet_rest
+    #     packet_with_length = self._unencrypted_packet_head + packet_after_length
+    #     self._unencrypted_packet_head = None
+
+    #   padding_length = packet_after_length[0]
+    #   payload_length = packet_length - padding_length - padding_length_size
+
+    #   # Packet size without the mac
+    #   packet_size = packet_length_size + padding_length_size + payload_length + padding_length
+
+    #   if (payload_length < 0) or (packet_size < max(block_size_or_zero, 16)):
+    #     raise ProtocolError
+
+    #   payload = packet_after_length[padding_length_size:(padding_length_size + payload_length)]
+
+
+    #   # Verify integrity using MAC
+    #   # See: RFC 4253 Section 6.4
+    #   #
+    #   # For AEAD ciphers, the tag has already been verified above as part of
+    #   # decrypt_and_verify_packet(); there is no separately negotiated MAC
+    #   # in use (_integrity_verification_in is None on this path).
+
+    #   sequence_number = self._sequence_number_in
+
+    #   if (not is_aead_in) and (self._integrity_verification_in is not None):
+    #     self._integrity_verification_in.start(sequence_number)
+    #     self._integrity_verification_in.update(packet_with_length)
+    #     produced_digest = self._integrity_verification_in.digest()
+
+    #     if not bytes_eq(digest, produced_digest):
+    #       self._disconnect(
+    #         DisconnectReason.MacError,
+    #         'MAC error',
+    #       )
+
+    #       return
+
+
+    #   # Return payload
+
+    #   self._sequence_number_in += 1
+
+    #   if len(payload) < 1:
+    #     raise ProtocolError
+
+    #   self._receive_message(MessageStub(payload), sequence_number)
+
+  def _disconnect(self, reason_code: DisconnectReason, description: str):
+    self._send_message(
+      DisconnectMessage(
+        reason_code=reason_code,
+        description=description,
+        language_tag='',
+      ),
+    )
+
+    self._events.append(
+      DisconnectEvent(
+        reason=reason_code,
+        description=description,
+        other=False,
+      ),
+    )
+
+    self._terminated = True
+
+  def _receive_message(self, message_stub: MessageStub, sequence_number: int):
+    LOGGER.debug(f'Received message id {message_stub.id} (sequence number {sequence_number})')
+
+    try:
+      match message_stub.id:
+        case DisconnectMessage.id:
+          message = message_stub.decode(DisconnectMessage)
+          self._terminated = True
+
+          LOGGER.debug(f'Disconnected by client: reason={DisconnectReason(message.reason_code).name!r} description={message.description!r}')
+
+          self._events.append(
+            DisconnectEvent(
+              reason=message.reason_code,
+              description=message.description,
+              other=True,
+            ),
+          )
+
+        case KexInitMessage.id:
+          if self._key_exchange is None:
+            self._key_exchange = iter(self._run_key_exchange())
+            next(self._key_exchange)
+
+          # The key exchange may stop at this point if algorithm negotiation
+          # fails
+          with contextlib.suppress(StopIteration):
+            self._key_exchange.send(message_stub)
+
+        case _ if (message_stub.id == NewKeysMessage.id) or (30 <= message_stub.id <= 49):
+          if self._key_exchange is None:
+            raise ProtocolError
+
+          with contextlib.suppress(StopIteration):
+            self._key_exchange.send(message_stub)
+
+        case ExtInfoMessage.id:
+          if self._handler_in is None:
+            raise ProtocolError
+
+          _ext_info = message_stub.decode(ExtInfoMessage)
+
+        case ServiceRequestMessage.id:
+          if (self._handler_in is None) or (self._key_exchange is not None):
+            raise ProtocolError
+
+          message = message_stub.decode(ServiceRequestMessage)
+
+          match message.service_name:
+            case 'ssh-userauth':
+              if self._authenticated:
+                raise ProtocolError
+
+              self._send_message(
+                ServiceAcceptMessage(service_name=message.service_name),
+              )
+            case _:
+              self._disconnect(DisconnectReason.ServiceNotAvailable, 'Service not available')
+        case UserAuthRequestMessage.id:
+          if (self._handler_in is None) or (self._key_exchange is not None):
+            raise ProtocolError
+
+          if self._authenticated:
+            raise ProtocolError
+
+          message = message_stub.decode(UserAuthRequestMessage)
+
+          if message.type in self.settings.supported_auth_methods:
+            match message.details:
+              case UserAuthRequestDetailsPassword(password=password, new_password=None):
+                def respond(success: bool):
+                  if success:
+                    self._send_message(UserAuthSuccessMessage())
+                    self._authenticated = True
+                  else:
+                    self._send_message(UserAuthFailureMessage(
+                      supported_methods=list(self.settings.supported_auth_methods),
+                      partial_success=False,
+                    ))
+
+                self._events.append(AuthWithPasswordRequestEvent(
+                  user_name=message.user_name,
+                  password=password,
+                  respond=respond,
+                ))
+
+              case UserAuthRequestDetailsPublicKey(algorithm=algorithm, public_key=public_key, signature=signature):
+                def respond(success: bool):
+                  if success:
+                    if signature is None:
+                      self._send_message(UserAuthPublicKeyOk(
+                        algorithm=algorithm,
+                        public_key=public_key,
+                      ))
+                    else:
+                      self._send_message(UserAuthSuccessMessage())
+                      self._authenticated = True
+                  else:
+                    self._send_message(UserAuthFailureMessage(
+                      supported_methods=list(self.settings.supported_auth_methods),
+                      partial_success=False,
+                    ))
+
+                self._events.append(AuthWithPublicKeyRequestEvent(
+                  user_name=message.user_name,
+                  algorithm=algorithm,
+                  public_key=public_key,
+                  authenticating=(signature is not None),
+                  respond=respond,
+                ))
+
+              case _:
+                raise ProtocolError
+          else:
+            self._send_message(UserAuthFailureMessage(
+              supported_methods=list(self.settings.supported_auth_methods),
+              partial_success=False,
+            ))
+
+        case ChannelOpenMessage.id:
+          if (self._handler_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+            raise ProtocolError
+
+          message = message_stub.decode(ChannelOpenMessage)
+
+          if message.sender_channel_id in self._channels:
+            raise ProtocolError
+
+          if message.window_size == 0:
+            raise ProtocolError
+
+          if message.max_packet_size == 0:
+            raise ProtocolError
+
+          match message.details:
+            case ChannelOpenDetailsSession():
+              inner_channel = SessionInnerChannel()
+            case _:
+              raise NotImplementedError
+
+          def accept_channel_open():
+            if self._terminated:
+              raise ConnectionTerminatedError
+
+            channel_id = self._next_channel_id
+            self._next_channel_id += 1
+
+            channel = Channel(
+              inner=inner_channel,
+
+              local_id=self._next_channel_id,
+              remote_id=message.sender_channel_id,
+
+              local_max_packet_size=MAX_DATA_MESSAGE_SIZE,
+              remote_max_packet_size=message.max_packet_size,
+
+              local_remaining_window_size=INITIAL_WINDOW_SIZE,
+              remote_remaining_window_size=message.window_size,
+            )
+
+            self._channels[channel_id] = channel
+
+            self._send_or_queue_message(
+              ChannelOpenConfirmationMessage(
+                recipient_channel_id=message.sender_channel_id,
+                sender_channel_id=channel_id,
+                window_size=channel.local_remaining_window_size,
+                max_packet_size=channel.local_max_packet_size,
+              ),
+            )
+
+            return channel_id
+
+          def reject_channel_open(reason: ChannelOpenFailureReason, description: str):
+            if self._terminated:
+              raise ConnectionTerminatedError
+
+            self._send_or_queue_message(
+              ChannelOpenFailureMessage(
+                recipient_channel_id=message.sender_channel_id,
+                reason_code=reason,
+                description=description,
+                language_tag='',
+              ),
+            )
+
+          self._events.append(
+            ChannelOpenEvent(
+              message,
+              accept=accept_channel_open,
+              reject=reject_channel_open,
+            ),
+          )
+
+        case ChannelRequestMessage.id | ChannelWindowAdjustMessage.id | ChannelDataMessage.id | ChannelEofMessage.id:
+          if (self._handler_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+            raise ProtocolError
+
+          # TODO: Allow decode() to accept and return a union
+          match message_stub.id:
+            case ChannelRequestMessage.id:
+              message = message_stub.decode(ChannelRequestMessage)
+            case ChannelWindowAdjustMessage.id:
+              message = message_stub.decode(ChannelWindowAdjustMessage)
+            case ChannelDataMessage.id:
+              message = message_stub.decode(ChannelDataMessage)
+            case ChannelEofMessage.id:
+              message = message_stub.decode(ChannelEofMessage)
+            case _:
+              raise UnreachableError
+
+          channel = self._channels.get(message.recipient_channel_id)
+
+          if (channel is None) or channel.dead:
+            raise ProtocolError
+
+          channel.queued_messages.append(message)
+          self._receive_channel_messages(channel)
+
+        case ChannelCloseMessage.id:
+          if (self._handler_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+            raise ProtocolError
+
+          message = message_stub.decode(ChannelCloseMessage)
+          channel = self._channels.get(message.recipient_channel_id)
+
+          if channel is None:
+            raise ProtocolError
+
+          if not channel.dead:
+            self._send_message(
+              ChannelCloseMessage(
+                recipient_channel_id=channel.remote_id,
+              ),
+            )
+
+          del self._channels[message.recipient_channel_id]
+
+        case _:
+          self._disconnect(DisconnectReason.ProtocolError, f'Unsupported message id {message_stub.id}')
+
+          if self.debug:
+            raise NotImplementedError(f'Unsupported message id {message_stub.id}')
+
+    except NotImplementedError, ProtocolError:
+      self._disconnect(DisconnectReason.ProtocolError, 'Protocol error')
+
+      if self.debug:
+        raise
+
+  def _receive_channel_messages(self, channel: Channel):
+    while channel.queued_messages and not channel.busy: # TODO: Why the channel.busy check?
+      message = channel.queued_messages.popleft()
+      # print(f'Processing queued message {message} for channel with remote id {channel.remote_id}')
+
+      match message:
+        case ChannelDataMessage():
+          if len(message.data) > channel.local_max_packet_size:
+            raise ProtocolError
+
+          channel.local_remaining_window_size -= len(message.data)
+
+          if channel.local_remaining_window_size < 0:
+            raise ProtocolError
+
+          self._events.append(
+            ChannelDataEvent(
+              channel_id=channel.local_id,
+              chunk=message.data,
+            ),
+          )
+
+        case ChannelWindowAdjustMessage():
+          if channel.remote_remaining_window_size > (2**32 - 1) - message.bytes_to_add:
+            raise ProtocolError
+
+          channel.remote_remaining_window_size += message.bytes_to_add
+
+          self._events.append(
+            ChannelWindowAdjustEvent(
+              channel_id=channel.local_id,
+            ),
+          )
+
+        case ChannelEofMessage():
+          self._events.append(
+            ChannelEofEvent(
+              channel_id=channel.local_id,
+            ),
+          )
+
+        case ChannelRequestMessage():
+          match message.details:
+            case ChannelRequestDetailsExec() | ChannelRequestDetailsShell():
+              def exit(exit_status: int):
+                assert not channel.dead
+
+                self._send_or_queue_message(
+                  ChannelRequestMessage(
+                    recipient_channel_id=channel.remote_id,
+                    request_type='exit-status',
+                    want_reply=False,
+                    details=ChannelRequestDetailsExitStatus(exit_status=exit_status),
+                  ),
+                )
+
+                self._send_or_queue_message(
+                  ChannelCloseMessage(
+                    recipient_channel_id=channel.remote_id,
+                  ),
+                )
+
+                self._events.append(
+                  ChannelCloseEvent(
+                    channel_id=channel.local_id,
+                  ),
+                )
+
+                channel.dead = True
+
+              def write(buffer: bytes, *, error: bool = False):
+                assert not channel.dead
+                assert len(buffer) <= channel.remote_remaining_window_size
+
+                current_buffer = buffer
+
+                while current_buffer:
+                  chunk = current_buffer[:channel.remote_max_packet_size]
+                  current_buffer = current_buffer[channel.remote_max_packet_size:]
+
+                  if error:
+                    message = ChannelExtendedDataMessage(
+                      recipient_channel_id=channel.remote_id,
+                      data_type_code=DataTypeCode.Stderr,
+                      data=chunk,
+                    )
+                  else:
+                    message = ChannelDataMessage(
+                      recipient_channel_id=channel.remote_id,
+                      data=chunk,
+                    )
+
+                  self._send_or_queue_message(message)
+
+              def get_window_size():
+                assert not channel.dead
+                return channel.remote_remaining_window_size
+
+              def reset_window():
+                assert not channel.dead
+
+                bytes_to_add = INITIAL_WINDOW_SIZE - channel.local_remaining_window_size
+
+                if bytes_to_add > 0:
+                  self._send_or_queue_message(
+                    ChannelWindowAdjustMessage(
+                      recipient_channel_id=channel.remote_id,
+                      bytes_to_add=bytes_to_add,
+                    ),
+                  )
+
+                  channel.local_remaining_window_size = INITIAL_WINDOW_SIZE
+
+              def accept():
+                assert isinstance(message, ChannelRequestMessage)
+
+                if message.want_reply:
+                  self._send_or_queue_message(
+                    ChannelSuccessMessage(
+                      recipient_channel_id=channel.remote_id,
+                    ),
+                  )
+
+                channel.busy = False
+                self._receive_channel_messages(channel)
+
+                return Stream(
+                  exit=exit,
+                  reset_window=reset_window,
+                  write=write,
+                  _get_window_size=get_window_size,
+                )
+
+              def reject():
+                self._send_or_queue_message(
+                  ChannelFailureMessage(
+                    recipient_channel_id=channel.remote_id,
+                  ),
+                )
+
+                channel.busy = False
+
+              match message.details:
+                case ChannelRequestDetailsExec():
+                  event = SessionExecEvent(
+                    channel_id=channel.local_id,
+                    command=message.details.command,
+                    env=channel.inner.env,
+                    pty=channel.inner.pty,
+
+                    accept=accept,
+                    reject=reject,
+                  )
+                case ChannelRequestDetailsShell():
+                  event = SessionShellEvent(
+                    channel_id=channel.local_id,
+                    env=channel.inner.env,
+                    pty=channel.inner.pty,
+
+                    accept=accept,
+                    reject=reject,
+                  )
+                case _:
+                  raise UnreachableError
+
+              self._events.append(event)
+              channel.busy = True
+
+            case ChannelRequestDetailsEnv():
+              if not isinstance(channel.inner, SessionInnerChannel):
+                raise ProtocolError
+
+              if message.details.name in channel.inner.env:
+                raise ProtocolError
+
+              channel.inner.env[message.details.name] = message.details.value
+
+              if message.want_reply:
+                self._send_message(
+                  ChannelSuccessMessage(
+                    recipient_channel_id=channel.remote_id,
+                  ),
+                )
+
+            case ChannelRequestDetailsPtyReq():
+              if not isinstance(channel.inner, SessionInnerChannel):
+                raise ProtocolError
+
+              if channel.inner.pty is not None:
+                raise ProtocolError
+
+              channel.inner.pty = SessionPTYOptions(
+                terminal_modes=message.details.term_modes,
+                terminal_name=message.details.term_name,
+                window_chars=(message.details.term_width_chars, message.details.term_height_chars),
+                window_pixels=(message.details.term_width_pixels, message.details.term_height_pixels),
+              )
+
+              if message.want_reply:
+                self._send_message(
+                  ChannelSuccessMessage(
+                    recipient_channel_id=channel.remote_id,
+                  ),
+                )
+
+            case ChannelRequestDetailsWindowChange():
+              if not isinstance(channel.inner, SessionInnerChannel):
+                raise ProtocolError
+
+              if channel.inner.pty is None:
+                raise ProtocolError
+
+              self._events.append(
+                PTYSessionTerminalSizeChangeEvent(
+                  channel_id=channel.local_id,
+                  window_chars=(message.details.term_width_chars, message.details.term_height_chars),
+                  window_pixels=(message.details.term_width_pixels, message.details.term_height_pixels),
+                ),
+              )
+
+            case _:
+              raise NotImplementedError
+
+        case _:
+          # typing.assert_never(message)
+          # raise UnreachableError
+
+          raise NotImplementedError
+
+
+  def _run_key_exchange(self) -> MessageFlow[None]:
+    assert self._key_exchange is not None
+
+    is_first = self._session_id is None
+
+    usable_server_host_key_algorithms = functools.reduce(operator.or_, (key.algorithms() for key in self.settings.host_keys), set())
+    server_supported_algorithms = copy.deepcopy(self.settings.supported_algorithms)
+    server_supported_algorithms.server_host_key_algorithms = [
+      algorithm for algorithm in self.settings.supported_algorithms.server_host_key_algorithms if algorithm in usable_server_host_key_algorithms
+    ]
+
+    server_kex_init_payload = self._send_message(
+      KexInitMessage(
+        kex_algorithms=(server_supported_algorithms.kex_algorithms + (['ext-info-s'] if is_first else [])),
+        server_host_key_algorithms=list(server_supported_algorithms.server_host_key_algorithms),
+        encryption_algorithms_client_to_server=list(server_supported_algorithms.encryption_algorithms_client_to_server),
+        encryption_algorithms_server_to_client=list(server_supported_algorithms.encryption_algorithms_server_to_client),
+        mac_algorithms_client_to_server=list(server_supported_algorithms.mac_algorithms_client_to_server),
+        mac_algorithms_server_to_client=list(server_supported_algorithms.mac_algorithms_server_to_client),
+        compression_algorithms_client_to_server=list(server_supported_algorithms.compression_algorithms_client_to_server),
+        compression_algorithms_server_to_client=list(server_supported_algorithms.compression_algorithms_server_to_client),
+        languages_client_to_server=[],
+        languages_server_to_client=[],
+        first_kex_packet_follows=False,
+      ),
+    )
+
+    client_kex_init_stub = yield
+    client_kex_init = client_kex_init_stub.decode(KexInitMessage)
+    client_kex_init_payload = client_kex_init_stub.payload
 
 
     # Negotiate algorithms
 
-    self.algorithm_selection = supported_algorithms.negotiate(client_kex_init)
-    self.host_key = next(key for key in self.server.host_keys if self.algorithm_selection.server_host_key_algorithm in key.algorithms())
+    try:
+      algorithm_selection = server_supported_algorithms.negotiate(client_kex_init)
+    except AlgorithmNegotiationError:
+      self._disconnect(
+        DisconnectReason.KeyExchangeFailed,
+        'Algorithm negotiation failed',
+      )
+
+      return
+
+    host_key = next(key for key in self.settings.host_keys if algorithm_selection.server_host_key_algorithm in key.algorithms())
 
 
     # Ignore next packet if the preferred algorithms do not match
 
     if client_kex_init.first_kex_packet_follows and (
-      (self.algorithm_selection.kex_algorithm != client_kex_init.kex_algorithms[0])
-      or (self.algorithm_selection.server_host_key_algorithm != client_kex_init.server_host_key_algorithms[0])
-      or (self.algorithm_selection.encryption_algorithm_client_to_server != client_kex_init.encryption_algorithms_client_to_server[0])
-      or (self.algorithm_selection.encryption_algorithm_server_to_client != client_kex_init.encryption_algorithms_server_to_client[0])
-      or (self.algorithm_selection.mac_algorithm_client_to_server != client_kex_init.mac_algorithms_client_to_server[0])
-      or (self.algorithm_selection.mac_algorithm_server_to_client != client_kex_init.mac_algorithms_server_to_client[0])
+      (algorithm_selection.kex_algorithm != client_kex_init.kex_algorithms[0])
+      or (algorithm_selection.server_host_key_algorithm != client_kex_init.server_host_key_algorithms[0])
+      or (algorithm_selection.encryption_algorithm_client_to_server != client_kex_init.encryption_algorithms_client_to_server[0])
+      or (algorithm_selection.encryption_algorithm_server_to_client != client_kex_init.encryption_algorithms_server_to_client[0])
+      or (algorithm_selection.mac_algorithm_client_to_server != client_kex_init.mac_algorithms_client_to_server[0])
+      or (algorithm_selection.mac_algorithm_server_to_client != client_kex_init.mac_algorithms_server_to_client[0])
     ):
-      # TODO: Skip next packet
-      raise NotImplementedError
+      _ = yield
 
 
     # Run key exchange
 
-    key_exchange = resolve_key_exchange(self.algorithm_selection.kex_algorithm)
+    assert self._client_ident_string is not None
 
-    exchange_hash, shared_key = await key_exchange.run(
+    hash_header = (
+        encode_string(bytes(self._client_ident_string))
+      + encode_string(bytes(self._server_ident_string))
+      + encode_string(client_kex_init_payload)
+      + encode_string(server_kex_init_payload)
+    )
+
+    key_exchange = resolve_key_exchange(algorithm_selection.kex_algorithm)
+
+    exchange_hash, shared_key = yield from key_exchange.run_as_server(
       self,
-      read_message,
-      client_kex_init_payload,
-      server_kex_init_payload,
+      algorithm_selection=algorithm_selection,
+      host_key=host_key,
+      hash_header=hash_header,
     )
 
 
     # Compute key exchange output
     # See: RFC 4253 Section 7.2
 
-    if self.session_id is None:
-      self.session_id = exchange_hash
+    if self._session_id is None:
+      self._session_id = exchange_hash
 
-    session_id = self.session_id
+    session_id = self._session_id
     encoded_shared_secret = encode_mpint(int.from_bytes(shared_key))
 
     def derive_key(letter: bytes, size: int):
@@ -338,398 +1109,46 @@ class Connection:
 
     # Establish output algorithms
 
-    self.write_message(NewKeysMessage())
+    self._send_message(NewKeysMessage())
 
-    EncryptionOut = resolve_encryption(self.algorithm_selection.encryption_algorithm_server_to_client)
-
-    self.encryption_out = EncryptionOut(
-      key=derive_key(b'D', EncryptionOut.key_size()),
-      iv=derive_key(b'B', EncryptionOut.block_size()),
-    )
-
-    self.integrity_verification_out = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_server_to_client)
-    self.integrity_verification_out.build(
-      derive_key(b'F', self.integrity_verification_out.key_size),
+    self._handler_out = build_handler(
+      encryption_name=algorithm_selection.encryption_algorithm_server_to_client,
+      integrity_verification_name=algorithm_selection.mac_algorithm_server_to_client,
+      derive_key=derive_key,
+      input_mode=False,
     )
 
 
     # Establish input algorithms
 
-    await read_message(NewKeysMessage)
+    _ = (yield).decode(NewKeysMessage)
 
-    EncryptionIn = resolve_encryption(self.algorithm_selection.encryption_algorithm_client_to_server)
-
-    self.encryption_in = EncryptionIn(
-      key=derive_key(b'C', EncryptionIn.key_size()),
-      iv=derive_key(b'A', EncryptionIn.block_size()),
+    self._handler_in = build_handler(
+      encryption_name=algorithm_selection.encryption_algorithm_client_to_server,
+      integrity_verification_name=algorithm_selection.mac_algorithm_client_to_server,
+      derive_key=derive_key,
+      input_mode=True,
     )
 
-    self.integrity_verification_in = resolve_integrity_verification(self.algorithm_selection.mac_algorithm_client_to_server)
-    self.integrity_verification_in.build(
-      derive_key(b'E', self.integrity_verification_in.key_size),
-    )
-
-    logger.debug('Done with key exchange')
+    LOGGER.debug('Done with key exchange')
 
 
     # Send extensions
 
-    # TODO: Only send on first key exchange
-    self.write_message(ExtInfoMessage(extensions={
-      'server-sig-algs': encode_name_list([
-        'rsa-sha2-256',
-        'rsa-sha2-512',
-        # TODO: List all supported algorithms
-      ]),
-    }))
+    if is_first:
+      self._send_message(
+        ExtInfoMessage(extensions={
+          'server-sig-algs': encode_name_list(extract(SignatureAlgorithmName)),
+        }),
+      )
 
+    self._events.append(ExchangedKeysEvent())
+    self._key_exchange = None
 
-    # Finish flow
 
-    self.key_exchange_flow = None
+    # Send queued messages
 
+    for queued_message in self._queued_messages:
+      self._send_message(queued_message)
 
-  async def start_user_auth(self):
-    self.user_auth_flow = MessageFlow()
-
-    try:
-      self.authenticated = await run_user_auth(self, self.user_auth_flow.read)
-    finally:
-      self.user_auth_flow = None
-
-
-  async def handle(self):
-    try:
-      try:
-        # Send server ident string
-
-        self.server_ident_string = IdentString(
-          comment=None,
-          software_version=self.server.software_version,
-        )
-
-        self.writer.write(bytes(self.server_ident_string) + b'\r\n')
-
-
-        # Read client ident string
-
-        # TODO: Improve safety
-        client_ident_string_terminated = await self.reader.readuntil(b'\r\n')
-
-        if len(client_ident_string_terminated) > 0xff:
-          raise ProtocolError
-
-        try:
-          self.client_ident_string = IdentString.decode(client_ident_string_terminated[:-2])
-        except ProtocolVersionNotSupportedError:
-          self.write_message(DisconnectMessage(
-            reason_code=DisconnectReason.ProtocolVersionNotSupported,
-            description='Protocol version not supported',
-            language_tag='',
-          ))
-
-          return
-
-        logger.debug(f'Client version: "{self.client_ident_string.software_version}"')
-
-
-        # Listen for messages
-
-        async def wrap[T](awaitable: Awaitable[T], /):
-          return await awaitable
-
-        async with TaskGroup() as group:
-          while True:
-            message_payload, message_sequence_number = await self.read_message()
-
-            if len(message_payload) < 1:
-              raise ProtocolError
-
-            message_id = message_payload[0]
-
-            logger.debug(f'Received message id {message_id} (sequence number {message_sequence_number})')
-
-            # See: RFC 4250 Section 4.1
-
-            match message_id:
-              case DisconnectMessage.id:
-                message = DisconnectMessage.decode_payload(message_payload)
-                log_string = 'Client disconnected with reason '
-
-                try:
-                  reason = DisconnectReason(message.reason_code)
-                except ValueError:
-                  log_string += f'{message.reason_code}'
-                else:
-                  log_string += f'{reason.name}'
-
-                if message.description:
-                  log_string += f' and message "{message.description}"'
-
-                logger.error(log_string)
-                return
-
-              case KexInitMessage.id:
-                if self.key_exchange_flow is None:
-                  group.create_task(wrap(aiodrive.prime(self.run_key_exchange())), name='key_exchange')
-
-                assert self.key_exchange_flow is not None
-                await self.key_exchange_flow.feed(message_id, message_payload)
-
-              case _ if (message_id == NewKeysMessage.id) or (30 <= message_id <= 49):
-                if self.key_exchange_flow is None:
-                  raise ProtocolError
-
-                await self.key_exchange_flow.feed(message_id, message_payload)
-
-              case ExtInfoMessage.id:
-                ext_info = ExtInfoMessage.decode_payload(message_payload)
-                logger.debug(f'Received extension info: {', '.join(ext_info.extensions.keys())}')
-
-              case ServiceRequestMessage.id:
-                if self.key_exchange_flow is not None:
-                  raise ProtocolError
-
-                message_payload_io = Reader(message_payload[1:])
-                service_request = ServiceRequestMessage.decode(message_payload_io)
-
-                match service_request.service_name:
-                  case 'ssh-userauth':
-                    self.write_message(ServiceAcceptMessage(service_name=service_request.service_name))
-                  case _:
-                    self.write_message(DisconnectMessage(
-                      reason_code=DisconnectReason.ServiceNotAvailable,
-                      description='Service not available',
-                      language_tag='',
-                    ))
-
-                    return
-
-              case UserAuthRequestMessage.id:
-                if self.user_auth_flow is not None:
-                  raise ProtocolError
-
-                group.create_task(wrap(aiodrive.prime(self.start_user_auth())), name='user_auth')
-
-                assert self.user_auth_flow is not None
-                await self.user_auth_flow.feed(message_id, message_payload) # type: ignore
-
-              case ChannelOpenMessage.id:
-                message = ChannelOpenMessage.decode_payload(message_payload)
-
-                match message.details:
-                  case ChannelOpenDetailsSession():
-                    logger.debug(f'Opening channel of type {type(message.details).__name__}')
-
-                    session_id = self.next_session_id
-                    self.next_session_id += 1
-
-                    self.sessions[session_id] = Session(client_channel_id=message.sender_channel_id)
-
-                    self.write_message(
-                      ChannelOpenConfirmationMessage(
-                        recipient_channel_id=message.sender_channel_id,
-                        sender_channel_id=session_id,
-                        window_size=message.window_size,
-                        max_packet_size=message.max_packet_size,
-                        # details=message.details,
-                      ),
-                    )
-
-                  case _:
-                    self.write_message(
-                      ChannelOpenFailureMessage(
-                        recipient_channel_id=message.sender_channel_id,
-                        reason_code=ChannelOpenFailureReason.UnknownChannelType,
-                        description='Unknown channel type',
-                        language_tag='',
-                      ),
-                    )
-
-              case ChannelRequestMessage.id:
-                message = ChannelRequestMessage.decode_payload(message_payload)
-                session = self.sessions.get(message.recipient_channel_id)
-
-                if session is None:
-                  raise ProtocolError
-
-                client_channel_id = session.client_channel_id
-
-                match message.details:
-                  case ChannelRequestDetailsEnv(name=name, value=value):
-                    success = self.client.set_session_env(name, value)
-
-                    if success:
-                      logger.debug(f'Setting environment variable {name}={value}')
-                      session.settings.env[name] = value
-
-                      if message.want_reply:
-                        self.write_message(ChannelSuccessMessage(
-                          recipient_channel_id=message.recipient_channel_id,
-                        ))
-
-                  case ChannelRequestDetailsPtyReq():
-                    logger.debug('Allocating PTY')
-                    success = session.settings.pty is None
-
-                    if success:
-                      session.settings.pty = SessionPTY(
-                        terminal_modes=message.details.term_modes,
-                        terminal_name=message.details.term_name,
-                        window_chars=(message.details.term_width_chars, message.details.term_height_chars),
-                        window_pixels=(message.details.term_width_pixels, message.details.term_height_pixels),
-                      )
-
-                  case ChannelRequestDetailsShell():
-                    logger.debug('Starting shell')
-
-                    try:
-                      coro = self.client.start_shell(session)
-                    except NotImplementedError:
-                      logger.debug('Shell not implemented by client')
-                      success = False
-                    else:
-                      async def write_stdout(chunk: Optional[bytes], /):
-                        if chunk is not None:
-                          # TODO: Split chunk
-
-                          self.write_message(
-                            ChannelDataMessage(
-                              recipient_channel_id=client_channel_id,
-                              data=chunk,
-                            ),
-                          )
-                        else:
-                          self.write_message(
-                            ChannelEofMessage(
-                              recipient_channel_id=client_channel_id,
-                            ),
-                          )
-
-                      session.activity = SessionActivity(
-                        stdout=AsyncWritableStreamImpl(write_stdout),
-                        stderr=AsyncWritableStreamImpl(write_stdout),
-                      )
-
-                      success = True
-
-                      async def session_handler():
-                        result = await coro
-
-                        match result:
-                          case SessionExitStatus(status):
-                            self.write_message(
-                              ChannelRequestMessage(
-                                recipient_channel_id=client_channel_id,
-                                request_type='exit-status', # TODO: Remove this
-                                want_reply=False,
-                                details=ChannelRequestDetailsExitStatus(exit_status=status),
-                              ),
-                            )
-                          case SessionExitSignal():
-                            self.write_message(
-                              ChannelRequestMessage(
-                                recipient_channel_id=client_channel_id,
-                                request_type='exit-signal', # TODO: Remove this
-                                want_reply=False,
-                                details=ChannelRequestDetailsExitSignal(
-                                  signal_name=result.signal_name,
-                                  core_dumped=result.core_dumped,
-                                  error_message=result.error_message,
-                                  language_tag=result.language_tag,
-                                ),
-                              ),
-                            )
-                          case _:
-                            raise UnreachableError
-
-                        self.write_message(
-                          ChannelCloseMessage(
-                            recipient_channel_id=client_channel_id,
-                          ),
-                        )
-
-                      group.create_task(session_handler())
-
-                  # case ChannelRequestDetailsExec(command):
-                  #   logger.debug(f'Executing command: "{command}"')
-                  #   success = True
-
-                  #   session.activity = SessionActivity()
-
-                  case _:
-                    print('Unsupported channel request details')
-                    pprint(message)
-
-                    raise ProtocolError
-
-                if message.want_reply:
-                  if success:
-                    self.write_message(ChannelSuccessMessage(
-                      recipient_channel_id=client_channel_id,
-                    ))
-                  else:
-                    self.write_message(ChannelFailureMessage(
-                      recipient_channel_id=client_channel_id,
-                    ))
-
-              case ChannelCloseMessage.id:
-                message = ChannelCloseMessage.decode_payload(message_payload)
-                session = self.sessions.pop(message.recipient_channel_id, None) # TODO: Improve
-
-                if session is None:
-                  raise ProtocolError
-
-              case ChannelDataMessage.id:
-                message = ChannelDataMessage.decode_payload(message_payload)
-                session = self.sessions.get(message.recipient_channel_id)
-
-                if (session is None) or (session.activity is None):
-                  raise ProtocolError
-
-                print(f'Received {message.data!r}')
-                session.activity.stdin._feed(message.data)
-                # session.activity.stdin._feed(message.data.replace(b'\r', b'\n'))
-
-              case _:
-                self.write_message(UnimplementedMessage(message_sequence_number))
-
-                if self.debug:
-                  raise ProtocolError(f'Unknown message id {message_id}')
-
-      except AlgorithmNegotiationError:
-        self.write_message(DisconnectMessage(
-          reason_code=DisconnectReason.KeyExchangeFailed,
-          description='Key exchange failed',
-          language_tag='',
-        ))
-
-        if self.debug:
-          raise
-
-      except IntegrityVerificationError:
-        self.write_message(DisconnectMessage(
-          reason_code=DisconnectReason.MacError,
-          description='Integrity verification error',
-          language_tag='',
-        ))
-
-        if self.debug:
-          raise
-
-      except ProtocolError:
-        self.write_message(DisconnectMessage(
-          reason_code=DisconnectReason.ProtocolError,
-          description='Protocol error',
-          language_tag='',
-        ))
-
-        if self.debug:
-          raise
-
-    except* ConnectionClosedError:
-      pass
-
-    finally:
-      self.writer.close()
-      logger.debug('Closed connection')
+    self._queued_messages.clear()

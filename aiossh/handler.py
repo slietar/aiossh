@@ -69,6 +69,13 @@ class ChaCha20Poly1305Handler(Handler):
     length = struct.unpack('>I', length_bytes)[0]
 
     tag_size = 16
+
+    if length < PADDING_LENGTH_SIZE:
+      raise ProtocolError
+
+    if PACKET_LENGTH_SIZE + length + tag_size > 35_000:
+      raise ProtocolError
+
     encrypted_packet_with_tag = yield length + tag_size
 
     tag = encrypted_packet_with_tag[-tag_size:]
@@ -134,6 +141,9 @@ class NoneHandler(Handler):
     if length < PADDING_LENGTH_SIZE:
       raise ProtocolError
 
+    if PACKET_LENGTH_SIZE + length > 35_000:
+      raise ProtocolError
+
     packet = yield length
 
     return packet
@@ -150,21 +160,28 @@ class DefaultHandler(Handler):
 
   @override
   def receive(self, sequence_number: int):
+    block_size = self.encryption.block_size()
+
     # Head = first block
     # Body = without first block
-    encrypted_head = yield self.encryption.block_size()
+    encrypted_head = yield block_size
     head = self.encryption.decrypt_blocks(encrypted_head)
 
     length_bytes = head[:PACKET_LENGTH_SIZE]
     length = struct.unpack('>I', length_bytes)[0]
 
-    if (PACKET_LENGTH_SIZE + length) % max(self.encryption.block_size(), 8) != 0:
+    if (PACKET_LENGTH_SIZE + length) % max(block_size, 8) != 0:
       raise ProtocolError
 
     if length < PADDING_LENGTH_SIZE:
       raise ProtocolError
 
-    encrypted_body_and_digest = yield PACKET_LENGTH_SIZE + length + self.integrity_verification.digest_size - self.encryption.block_size()
+    total_size = PACKET_LENGTH_SIZE + length + self.integrity_verification.digest_size
+
+    if total_size > 35_000:
+      raise ProtocolError
+
+    encrypted_body_and_digest = yield total_size - block_size
 
     encrypted_body = encrypted_body_and_digest[:-self.integrity_verification.digest_size]
     body = self.encryption.decrypt_blocks(encrypted_body)
