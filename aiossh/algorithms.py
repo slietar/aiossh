@@ -51,6 +51,10 @@ type MacAlgorithmName = Literal[
 type CompressionAlgorithmName = Literal['none']
 
 
+def is_encryption_algorithm_aead(algorithm: EncryptionAlgorithmName):
+  return algorithm in ('chacha20-poly1305', 'chacha20-poly1305@openssh.com')
+
+
 def extract(ty):
   match typing.get_origin(ty):
     case typing.Literal:
@@ -83,7 +87,7 @@ class AlgorithmSets:
     server_host_key_algorithm = next((algorithm for algorithm in client_message.server_host_key_algorithms if algorithm in self.server_host_key_algorithms), None)
     encryption_algorithm_client_to_server = next((algorithm for algorithm in client_message.encryption_algorithms_client_to_server if algorithm in self.encryption_algorithms_client_to_server), None)
     encryption_algorithm_server_to_client = next((algorithm for algorithm in client_message.encryption_algorithms_server_to_client if algorithm in self.encryption_algorithms_server_to_client), None)
-    mac_algorithm_client_to_server = next((algorithm for algorithm in client_message.mac_algorithms_client_to_server if algorithm in self.mac_algorithms_client_to_server), None)
+
     mac_algorithm_server_to_client = next((algorithm for algorithm in client_message.mac_algorithms_server_to_client if algorithm in self.mac_algorithms_server_to_client), None)
 
     assert kex_algorithm not in ('ext-info-c', 'ext-info-s')
@@ -96,16 +100,31 @@ class AlgorithmSets:
       raise AlgorithmNegotiationError('No common client-to-server encryption algorithm found')
     if encryption_algorithm_server_to_client is None:
       raise AlgorithmNegotiationError('No common server-to-client encryption algorithm found')
-    if mac_algorithm_client_to_server is None:
-      raise AlgorithmNegotiationError('No common client-to-server MAC algorithm found')
-    if mac_algorithm_server_to_client is None:
-      raise AlgorithmNegotiationError('No common server-to-client MAC algorithm found')
+
+    encryption_algorithm_client_to_server = cast(EncryptionAlgorithmName, encryption_algorithm_client_to_server)
+    encryption_algorithm_server_to_client = cast(EncryptionAlgorithmName, encryption_algorithm_server_to_client)
+
+    if not is_encryption_algorithm_aead(encryption_algorithm_client_to_server):
+      mac_algorithm_client_to_server = next((algorithm for algorithm in client_message.mac_algorithms_client_to_server if algorithm in self.mac_algorithms_client_to_server), None)
+
+      if mac_algorithm_client_to_server is None:
+        raise AlgorithmNegotiationError('No common client-to-server MAC algorithm found')
+    else:
+      mac_algorithm_client_to_server = None
+
+    if not is_encryption_algorithm_aead(encryption_algorithm_server_to_client):
+      mac_algorithm_server_to_client = next((algorithm for algorithm in client_message.mac_algorithms_server_to_client if algorithm in self.mac_algorithms_server_to_client), None)
+
+      if mac_algorithm_server_to_client is None:
+        raise AlgorithmNegotiationError('No common server-to-client MAC algorithm found')
+    else:
+      mac_algorithm_server_to_client = None
 
     return AlgorithmSelection(
       kex_algorithm=cast(KexAlgorithmName, kex_algorithm),
       server_host_key_algorithm=cast(HostKeyAlgorithmName, server_host_key_algorithm),
-      encryption_algorithm_client_to_server=cast(EncryptionAlgorithmName, encryption_algorithm_client_to_server),
-      encryption_algorithm_server_to_client=cast(EncryptionAlgorithmName, encryption_algorithm_server_to_client),
+      encryption_algorithm_client_to_server=encryption_algorithm_client_to_server,
+      encryption_algorithm_server_to_client=encryption_algorithm_server_to_client,
       mac_algorithm_client_to_server=cast(MacAlgorithmName, mac_algorithm_client_to_server),
       mac_algorithm_server_to_client=cast(MacAlgorithmName, mac_algorithm_server_to_client),
     )

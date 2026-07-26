@@ -71,6 +71,15 @@ Public keys
   <br>Secure Shell (SSH) Key Exchange Method Using Curve25519 and Curve448
 - [draft-miller-secsh-umac-01](https://datatracker.ietf.org/doc/html/draft-miller-secsh-umac-01.html)
   <br>The use of UMAC in the SSH Transport Layer Protocol
+- [draft-ietf-sshm-strict-kex-01](https://www.ietf.org/archive/id/draft-ietf-sshm-strict-kex-01.html)
+  <br>SSH Strict KEX extension
+- [draft-ietf-sshm-mlkem-hybrid-kex-00](https://datatracker.ietf.org/doc/html/draft-ietf-sshm-mlkem-hybrid-kex-00)
+  <br>PQ/T Hybrid Key Exchange in SSH
+- [draft-ietf-sshm-chacha20-poly1305-01](https://www.ietf.org/archive/id/draft-ietf-sshm-chacha20-poly1305-01.html)
+  <br>Secure Shell (SSH) authenticated encryption cipher: chacha20-poly1305
+
+Other:
 
 - [SSH implementation comparison](https://ssh-comparison.quendi.de/comparison/mac.html)
 - [OpenSSH extensions](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL)
+- [Writing I/O-Free (Sans-I/O) Protocol Implementations](https://sans-io.readthedocs.io/how-to-sans-io.html)

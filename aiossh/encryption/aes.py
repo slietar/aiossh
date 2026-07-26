@@ -8,13 +8,13 @@ from cryptography.hazmat.primitives.ciphers import (
   modes,
 )
 
-from .base import BlockEncryption
+from .base import Encryption
 
 
 # See: RFC 4344
 
 @dataclass(slots=True)
-class AESCTREncryption(BlockEncryption):
+class AESCTREncryption(Encryption):
   cipher: Cipher
   decryptor: CipherContext
   encryptor: CipherContext

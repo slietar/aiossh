@@ -3,21 +3,17 @@ import copy
 import functools
 import logging
 import operator
-import struct
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Optional
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.constant_time import bytes_eq
-
 from .algorithms import AlgorithmSelection, AlgorithmSets, extract
-from .encryption.base import AEADEncryption, BlockEncryption, Encryption
-from .encryption.resolve import resolve_encryption
+from .encryption.resolve import build_handler
 from .error import (
   AlgorithmNegotiationError,
   ConnectionTerminatedError,
+  IntegrityVerificationError,
   ProtocolError,
   ProtocolVersionNotSupportedError,
   UnreachableError,
@@ -40,9 +36,8 @@ from .events import (
   Stream,
 )
 from .flow import MessageFlow, MessageStub
+from .handler import PADDING_LENGTH_SIZE, Handler, HandlerState, NoneHandler
 from .ident_string import IdentString
-from .integrity.base import IntegrityVerification
-from .integrity.resolve import resolve_integrity_verification
 from .key_exchange.resolve import resolve_key_exchange
 from .messages.base import Message
 from .messages.channel import (
@@ -87,10 +82,10 @@ from .messages.user_auth import (
   UserAuthRequestMessage,
   UserAuthSuccessMessage,
 )
-from .packet import encode_packet
 from .public.base import PrivateKey
 from .public.resolve import SignatureAlgorithmName
 from .structures.primitives import encode_mpint, encode_name_list, encode_string
+from .utilities import GeneratorWrapper
 
 
 LOGGER = logging.getLogger(__name__)
@@ -159,21 +154,18 @@ class SansIOConnection:
   _queued_messages: list[Message] = field(default_factory=list, init=False)
 
   _algorithm_selection: Optional[AlgorithmSelection] = field(default=None, init=False)
-  _encryption_in: Optional[Encryption] = field(default=None, init=False)
-  _encryption_out: Optional[Encryption] = field(default=None, init=False)
   _host_key: Optional[PrivateKey] = field(default=None, init=False)
-  _integrity_verification_in: Optional[IntegrityVerification] = field(default=None, init=False)
-  _integrity_verification_out: Optional[IntegrityVerification] = field(default=None, init=False)
+
+  _handler_in: Handler = field(default_factory=NoneHandler, init=False)
+  _handler_out: Handler = field(default_factory=NoneHandler, init=False)
+  _handler_state_in: Optional[HandlerState] = field(default=None, init=False)
 
   _receive_buffer: bytes = field(default_factory=bytes, init=False)
   _send_buffer: bytes = field(default_factory=bytes, init=False)
   _events: deque[Event] = field(default_factory=deque, init=False)
-  _unencrypted_packet_head: Optional[bytes] = field(default=None, init=False)
 
-  # AEAD (chacha20-poly1305) read path only: cached ciphertext/plaintext of
-  # the 4-byte length field while awaiting the rest of the packet
-  _encrypted_packet_length: Optional[bytes] = field(default=None, init=False)
-  _unencrypted_packet_length: Optional[bytes] = field(default=None, init=False)
+  _encrypted_packet_head: Optional[bytes] = field(default=None, init=False)
+  _unencrypted_packet_head: Optional[bytes] = field(default=None, init=False)
 
   _channels: dict[int, Channel] = field(default_factory=dict, init=False)
   _next_channel_id: int = field(default=865, init=False)
@@ -206,25 +198,7 @@ class SansIOConnection:
   def _send_message(self, message: Message):
     payload = message.encode_payload()
 
-    if isinstance(self._encryption_out, AEADEncryption):
-      packet_with_length = encode_packet(payload, block_size=self._encryption_out.block_size(), length_field_size=0)
-      self._send(self._encryption_out.encrypt_packet(self._sequence_number_out, packet_with_length))
-    else:
-      packet_with_length = encode_packet(
-        payload,
-        block_size=(self._encryption_out.block_size() if self._encryption_out else None),
-      )
-
-      if self._encryption_out is not None:
-        self._send(self._encryption_out.encrypt_blocks(packet_with_length))
-      else:
-        self._send(packet_with_length)
-
-      if self._integrity_verification_out is not None:
-        self._integrity_verification_out.start(self._sequence_number_out)
-        self._integrity_verification_out.update(packet_with_length)
-        self._send(self._integrity_verification_out.digest())
-
+    self._send(self._handler_out.send(self._sequence_number_out, payload))
     self._sequence_number_out += 1
 
     # Return payload because the KexInit message payload is reused for key exchange
@@ -291,6 +265,9 @@ class SansIOConnection:
 
     self._receive_buffer += chunk
 
+    if not self._receive_buffer:
+      return
+
     if self._client_ident_string is None:
       # See: RFC 4253 Section 4.2
       max_terminated_ident_string_length = 255
@@ -322,159 +299,215 @@ class SansIOConnection:
       self._key_exchange = iter(self._run_key_exchange())
       next(self._key_exchange)
 
+
     while True:
-      packet_length_size = 4
-      padding_length_size = 1
+      if self._handler_state_in is None:
+        generator = GeneratorWrapper(self._handler_in.receive(self._sequence_number_in))
 
-      is_aead_in = isinstance(self._encryption_in, AEADEncryption)
-
-      block_size_or_zero = 0 if is_aead_in else (self._encryption_in.block_size() if self._encryption_in is not None else 0)
-      digest_size_or_zero = self._encryption_in.tag_size() if is_aead_in else (self._integrity_verification_in.digest_size if self._integrity_verification_in is not None else 0)
-
-
-      # Packet description
-      #   uint32 packet length = payload length + padding length + 1
-      #   byte padding length
-      #   byte[] payload
-      #   byte[] random padding of arbitrary size
-      #   byte[] mac
-      #
-      # See: RFC 4253 Section 6
-
-      # Read packet length or first block
-
-      if self._unencrypted_packet_head is None:
-        match self._encryption_in:
-          case AEADEncryption():
-            encrypted_length = self._receive(packet_length_size)
-
-            if encrypted_length is not None:
-              self._encrypted_packet_length = encrypted_length
-              self._unencrypted_packet_length = self._encryption_in.decrypt_length(self._sequence_number_in, encrypted_length)
-          case BlockEncryption():
-            encrypted_first_block = self._receive(self._encryption_in.block_size())
-
-            if encrypted_first_block is not None:
-              # Decryption is stateful and must there only happen once
-              self._unencrypted_packet_head = self._encryption_in.decrypt_blocks(encrypted_first_block)
-          case _:
-            self._unencrypted_packet_head = self._receive(packet_length_size)
-
-      if self._unencrypted_packet_head is None:
-        break
-
-      unencrypted_packet_head = self._unencrypted_packet_head
-
-
-      # Decode packet length
-
-      # Packet length is payload length + padding + 1 byte for the padding length
-      packet_length_bytes = unencrypted_packet_head[:packet_length_size]
-      packet_length = struct.unpack('>I', packet_length_bytes)[0]
-
-      if packet_length > 100_000:
-        raise Exception('Packet length exceeds 100,000 bytes')
-
-      # The packet must at least contain the padding length byte.
-      if packet_length < padding_length_size:
-        raise ProtocolError
-
-      # The total packet size, with length and MAC, must not exceed 35,000 bytes.
-      if packet_length_size + packet_length + digest_size_or_zero > 35_000:
-        raise ProtocolError
-
-      # The packet length size and the packet length must be a multiple of the
-      # block size or 8, whichever is larger. AEAD ciphers encrypt the
-      # length field separately and exclude it from this alignment target.
-      alignment_target = packet_length if is_aead_in else (packet_length_size + packet_length)
-
-      if alignment_target % max(block_size_or_zero, 8) != 0:
-        raise ProtocolError
-
-
-      # Read rest of packet
-
-      missing_byte_count = packet_length_size + packet_length - len(unencrypted_packet_head)
-      rest = self._receive(missing_byte_count + digest_size_or_zero)
-
-      if rest is None:
-        break
-
-      packet_rest = rest[:missing_byte_count]
-      digest = rest[missing_byte_count:]
-
-      if is_aead_in:
-        try:
-          decrypted_rest = self._encryption_in.decrypt_and_verify_packet(
-            self._sequence_number_in,
-            self._encrypted_packet_length,
-            packet_rest,
-            digest,
-          )
-        except InvalidSignature:
-          self._disconnect(
-            DisconnectReason.MacError,
-            'MAC error',
-          )
-
-          return
-
-        packet_with_length = self._unencrypted_packet_length + decrypted_rest
-        packet_after_length = decrypted_rest
-        self._encrypted_packet_length = None
-        self._unencrypted_packet_length = None
-      elif self._encryption_in is not None:
-        packet_with_length = self._unencrypted_packet_head + self._encryption_in.decrypt_blocks(packet_rest)
-        packet_after_length = packet_with_length[packet_length_size:]
-        self._unencrypted_packet_head = None
+        self._handler_state_in = HandlerState(
+          generator=generator,
+          requested_size=next(generator),
+        )
       else:
-        packet_after_length = packet_rest
-        packet_with_length = self._unencrypted_packet_head + packet_after_length
-        self._unencrypted_packet_head = None
+        generator = self._handler_state_in.generator
 
-      padding_length = packet_after_length[0]
-      payload_length = packet_length - padding_length - padding_length_size
+      try:
+        while True:
+          response = self._receive(self._handler_state_in.requested_size)
 
-      # Packet size without the mac
-      packet_size = packet_length_size + padding_length_size + payload_length + padding_length
+          if response is None:
+            return
 
-      if (payload_length < 0) or (packet_size < max(block_size_or_zero, 16)):
-        raise ProtocolError
+          try:
+            self._handler_state_in.requested_size = generator.send(response)
+          except StopIteration:
+            self._handler_state_in = None
+            packet = generator.value
+            break
+      except IntegrityVerificationError:
+        self._disconnect(
+          DisconnectReason.MacError,
+          'MAC error',
+        )
 
-      payload = packet_after_length[padding_length_size:(padding_length_size + payload_length)]
-
-
-      # Verify integrity using MAC
-      # See: RFC 4253 Section 6.4
-      #
-      # For AEAD ciphers, the tag has already been verified above as part of
-      # decrypt_and_verify_packet(); there is no separately negotiated MAC
-      # in use (_integrity_verification_in is None on this path).
-
-      sequence_number = self._sequence_number_in
-
-      if (not is_aead_in) and (self._integrity_verification_in is not None):
-        self._integrity_verification_in.start(sequence_number)
-        self._integrity_verification_in.update(packet_with_length)
-        produced_digest = self._integrity_verification_in.digest()
-
-        if not bytes_eq(digest, produced_digest):
-          self._disconnect(
-            DisconnectReason.MacError,
-            'MAC error',
-          )
-
-          return
+        break
 
 
       # Return payload
 
-      self._sequence_number_in += 1
+      padding_length = packet[0]
+      payload = packet[PADDING_LENGTH_SIZE:-padding_length]
 
-      if len(payload) < 1:
+      if len(payload) > 32_768:
         raise ProtocolError
 
-      self._receive_message(MessageStub(payload), sequence_number)
+      # if (payload_length < 0) or (packet_size < max(block_size_or_zero, 16)):
+      #   raise ProtocolError
+
+      sequence_number = self._sequence_number_in
+      self._sequence_number_in += 1
+
+      self._receive_message(
+        MessageStub(payload),
+        sequence_number,
+      )
+
+    # return
+
+
+    # while True:
+    #   packet_length_size = 4
+    #   padding_length_size = 1
+
+    #   is_aead_in = isinstance(self._encryption_in, AEADEncryption)
+
+    #   block_size_or_zero = 0 if is_aead_in else (self._encryption_in.block_size() if self._encryption_in is not None else 0)
+    #   digest_size_or_zero = self._encryption_in.tag_size() if is_aead_in else (self._integrity_verification_in.digest_size if self._integrity_verification_in is not None else 0)
+
+
+    #   # Packet description
+    #   #   uint32 packet length = payload length + padding length + 1
+    #   #   byte padding length
+    #   #   byte[] payload
+    #   #   byte[] random padding of arbitrary size
+    #   #   byte[] mac
+    #   #
+    #   # See: RFC 4253 Section 6
+
+    #   # Read packet length or first block
+
+    #   if self._unencrypted_packet_head is None:
+    #     match self._encryption_in:
+    #       case AEADEncryption():
+    #         encrypted_length = self._receive(packet_length_size)
+
+    #         if encrypted_length is not None:
+    #           self._encrypted_packet_head = encrypted_length
+    #           self._unencrypted_packet_head = self._encryption_in.decrypt_length(self._sequence_number_in, encrypted_length)
+    #       case Encryption():
+    #         encrypted_first_block = self._receive(self._encryption_in.block_size())
+
+    #         if encrypted_first_block is not None:
+    #           # Decryption is stateful and must there only happen once
+    #           self._unencrypted_packet_head = self._encryption_in.decrypt_blocks(encrypted_first_block)
+    #       case _:
+    #         self._unencrypted_packet_head = self._receive(packet_length_size)
+
+    #   if self._unencrypted_packet_head is None:
+    #     break
+
+    #   unencrypted_packet_head = self._unencrypted_packet_head
+
+
+    #   # Decode packet length
+
+    #   # Packet length is payload length + padding + 1 byte for the padding length
+    #   packet_length_bytes = unencrypted_packet_head[:packet_length_size]
+    #   packet_length = struct.unpack('>I', packet_length_bytes)[0]
+
+    #   if packet_length > 100_000:
+    #     raise Exception('Packet length exceeds 100,000 bytes')
+
+    #   # The packet must at least contain the padding length byte.
+    #   if packet_length < padding_length_size:
+    #     raise ProtocolError
+
+    #   # The total packet size, with length and MAC, must not exceed 35,000 bytes.
+    #   if packet_length_size + packet_length + digest_size_or_zero > 35_000:
+    #     raise ProtocolError
+
+    #   # The packet length size and the packet length must be a multiple of the
+    #   # block size or 8, whichever is larger. AEAD ciphers encrypt the
+    #   # length field separately and exclude it from this alignment target.
+    #   alignment_target = packet_length if is_aead_in else (packet_length_size + packet_length)
+
+    #   if alignment_target % max(block_size_or_zero, 8) != 0:
+    #     raise ProtocolError
+
+
+    #   # Read rest of packet
+
+    #   missing_byte_count = packet_length_size + packet_length - len(unencrypted_packet_head)
+    #   rest = self._receive(missing_byte_count + digest_size_or_zero)
+
+    #   if rest is None:
+    #     break
+
+    #   packet_rest = rest[:missing_byte_count]
+    #   digest = rest[missing_byte_count:]
+
+    #   if is_aead_in:
+    #     try:
+    #       decrypted_rest = self._encryption_in.decrypt_and_verify_packet(
+    #         self._sequence_number_in,
+    #         self._encrypted_packet_head,
+    #         packet_rest,
+    #         digest,
+    #       )
+    #     except InvalidSignature:
+    #       self._disconnect(
+    #         DisconnectReason.MacError,
+    #         'MAC error',
+    #       )
+
+    #       return
+
+    #     packet_with_length = self._unencrypted_packet_head + decrypted_rest
+    #     packet_after_length = decrypted_rest
+    #     self._encrypted_packet_head = None
+    #     self._unencrypted_packet_head = None
+    #   elif self._encryption_in is not None:
+    #     packet_with_length = self._unencrypted_packet_head + self._encryption_in.decrypt_blocks(packet_rest)
+    #     packet_after_length = packet_with_length[packet_length_size:]
+    #     self._unencrypted_packet_head = None
+    #   else:
+    #     packet_after_length = packet_rest
+    #     packet_with_length = self._unencrypted_packet_head + packet_after_length
+    #     self._unencrypted_packet_head = None
+
+    #   padding_length = packet_after_length[0]
+    #   payload_length = packet_length - padding_length - padding_length_size
+
+    #   # Packet size without the mac
+    #   packet_size = packet_length_size + padding_length_size + payload_length + padding_length
+
+    #   if (payload_length < 0) or (packet_size < max(block_size_or_zero, 16)):
+    #     raise ProtocolError
+
+    #   payload = packet_after_length[padding_length_size:(padding_length_size + payload_length)]
+
+
+    #   # Verify integrity using MAC
+    #   # See: RFC 4253 Section 6.4
+    #   #
+    #   # For AEAD ciphers, the tag has already been verified above as part of
+    #   # decrypt_and_verify_packet(); there is no separately negotiated MAC
+    #   # in use (_integrity_verification_in is None on this path).
+
+    #   sequence_number = self._sequence_number_in
+
+    #   if (not is_aead_in) and (self._integrity_verification_in is not None):
+    #     self._integrity_verification_in.start(sequence_number)
+    #     self._integrity_verification_in.update(packet_with_length)
+    #     produced_digest = self._integrity_verification_in.digest()
+
+    #     if not bytes_eq(digest, produced_digest):
+    #       self._disconnect(
+    #         DisconnectReason.MacError,
+    #         'MAC error',
+    #       )
+
+    #       return
+
+
+    #   # Return payload
+
+    #   self._sequence_number_in += 1
+
+    #   if len(payload) < 1:
+    #     raise ProtocolError
+
+    #   self._receive_message(MessageStub(payload), sequence_number)
 
   def _disconnect(self, reason_code: DisconnectReason, description: str):
     self._send_message(
@@ -532,13 +565,13 @@ class SansIOConnection:
             self._key_exchange.send(message_stub)
 
         case ExtInfoMessage.id:
-          if self._encryption_in is None:
+          if self._handler_in is None:
             raise ProtocolError
 
           _ext_info = message_stub.decode(ExtInfoMessage)
 
         case ServiceRequestMessage.id:
-          if (self._encryption_in is None) or (self._key_exchange is not None):
+          if (self._handler_in is None) or (self._key_exchange is not None):
             raise ProtocolError
 
           message = message_stub.decode(ServiceRequestMessage)
@@ -554,7 +587,7 @@ class SansIOConnection:
             case _:
               self._disconnect(DisconnectReason.ServiceNotAvailable, 'Service not available')
         case UserAuthRequestMessage.id:
-          if (self._encryption_in is None) or (self._key_exchange is not None):
+          if (self._handler_in is None) or (self._key_exchange is not None):
             raise ProtocolError
 
           if self._authenticated:
@@ -615,7 +648,7 @@ class SansIOConnection:
             ))
 
         case ChannelOpenMessage.id:
-          if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+          if (self._handler_in is None) or (self._key_exchange is not None) or (not self._authenticated):
             raise ProtocolError
 
           message = message_stub.decode(ChannelOpenMessage)
@@ -690,7 +723,7 @@ class SansIOConnection:
           )
 
         case ChannelRequestMessage.id | ChannelWindowAdjustMessage.id | ChannelDataMessage.id | ChannelEofMessage.id:
-          if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+          if (self._handler_in is None) or (self._key_exchange is not None) or (not self._authenticated):
             raise ProtocolError
 
           # TODO: Allow decode() to accept and return a union
@@ -715,7 +748,7 @@ class SansIOConnection:
           self._receive_channel_messages(channel)
 
         case ChannelCloseMessage.id:
-          if (self._encryption_in is None) or (self._key_exchange is not None) or (not self._authenticated):
+          if (self._handler_in is None) or (self._key_exchange is not None) or (not self._authenticated):
             raise ProtocolError
 
           message = message_stub.decode(ChannelCloseMessage)
@@ -1078,47 +1111,24 @@ class SansIOConnection:
 
     self._send_message(NewKeysMessage())
 
-    EncryptionOut = resolve_encryption(algorithm_selection.encryption_algorithm_server_to_client)
-
-    if issubclass(EncryptionOut, AEADEncryption):
-      self._encryption_out = EncryptionOut(
-        key=derive_key(b'D', EncryptionOut.key_size()),
-      )
-
-      self._integrity_verification_out = None
-    else:
-      self._encryption_out = EncryptionOut(
-        key=derive_key(b'D', EncryptionOut.key_size()),
-        iv=derive_key(b'B', EncryptionOut.block_size()),
-      )
-
-      self._integrity_verification_out = resolve_integrity_verification(algorithm_selection.mac_algorithm_server_to_client)
-      self._integrity_verification_out.build(
-        derive_key(b'F', self._integrity_verification_out.key_size),
-      )
+    self._handler_out = build_handler(
+      encryption_name=algorithm_selection.encryption_algorithm_server_to_client,
+      integrity_verification_name=algorithm_selection.mac_algorithm_server_to_client,
+      derive_key=derive_key,
+      input_mode=False,
+    )
 
 
     # Establish input algorithms
 
     _ = (yield).decode(NewKeysMessage)
 
-    EncryptionIn = resolve_encryption(algorithm_selection.encryption_algorithm_client_to_server)
-
-    if issubclass(EncryptionIn, AEADEncryption):
-      self._encryption_in = EncryptionIn(
-        key=derive_key(b'C', EncryptionIn.key_size()),
-      )
-      self._integrity_verification_in = None
-    else:
-      self._encryption_in = EncryptionIn(
-        key=derive_key(b'C', EncryptionIn.key_size()),
-        iv=derive_key(b'A', EncryptionIn.block_size()),
-      )
-
-      self._integrity_verification_in = resolve_integrity_verification(algorithm_selection.mac_algorithm_client_to_server)
-      self._integrity_verification_in.build(
-        derive_key(b'E', self._integrity_verification_in.key_size),
-      )
+    self._handler_in = build_handler(
+      encryption_name=algorithm_selection.encryption_algorithm_client_to_server,
+      integrity_verification_name=algorithm_selection.mac_algorithm_client_to_server,
+      derive_key=derive_key,
+      input_mode=True,
+    )
 
     LOGGER.debug('Done with key exchange')
 
