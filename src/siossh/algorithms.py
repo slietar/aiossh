@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from types import UnionType
 from typing import Literal, TypeAliasType, cast
 
-from .error import AlgorithmNegotiationError
+from .error import AlgorithmNegotiationError, UnreachableError
 from .messages.key_exchange import KexInitMessage
 
 
@@ -56,7 +56,7 @@ def is_encryption_algorithm_aead(algorithm: EncryptionAlgorithmName):
   return algorithm in ('chacha20-poly1305', 'chacha20-poly1305@openssh.com')
 
 
-def extract(ty):
+def extract(ty) -> list:
   match typing.get_origin(ty):
     case typing.Literal:
       return list(typing.get_args(ty))
@@ -66,6 +66,8 @@ def extract(ty):
       return extract(ty.__value__)
     case UnionType():
       return functools.reduce(operator.add, (extract(arg) for arg in typing.get_args(ty)))
+    case _:
+      raise UnreachableError
 
 @dataclass(kw_only=True, slots=True)
 class AlgorithmSets:
