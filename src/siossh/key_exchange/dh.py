@@ -114,4 +114,4 @@ class DhKeyExchange(KeyExchange):
       ),
     )
 
-    return exchange_hash, shared_key
+    return exchange_hash, encoded_shared_secret

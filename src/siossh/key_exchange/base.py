@@ -1,4 +1,4 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from ..algorithms import AlgorithmSelection
@@ -11,9 +11,11 @@ if TYPE_CHECKING:
 
 
 class KeyExchange(ABC):
+  @abstractmethod
   def hash(self, data: bytes, /) -> bytes:
     ...
 
+  @abstractmethod
   def run_as_server(
     self,
     conn: Connection,

@@ -63,6 +63,7 @@ class Curve25519KeyExchange(KeyExchange):
     )
 
     shared_key = private_key.exchange(client_public_key)
+    encoded_shared_secret = encode_mpint(int.from_bytes(shared_key))
 
     encoded_host_public_key = host_key.to_public_key().encode()
 
@@ -71,7 +72,7 @@ class Curve25519KeyExchange(KeyExchange):
       + encode_string(encoded_host_public_key)
       + encode_string(kex_ecdh_init.q_h)
       + encode_string(server_public_key_string)
-      + encode_mpint(int.from_bytes(shared_key)),
+      + encoded_shared_secret,
     )
 
     signature = host_key.sign_encode(
@@ -87,4 +88,4 @@ class Curve25519KeyExchange(KeyExchange):
       ),
     )
 
-    return exchange_hash, shared_key
+    return exchange_hash, encoded_shared_secret

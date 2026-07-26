@@ -8,7 +8,7 @@ version = "0.0"
 requires-python = ">=3.14"
 dependencies = [
     "aiodrive~=5.1",
-    "cryptography~=46.0",
+    "cryptography~=49.0",
     "umac~=2.0",
 ]
 

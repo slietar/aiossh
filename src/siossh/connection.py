@@ -84,7 +84,7 @@ from .messages.user_auth import (
 )
 from .public.base import PrivateKey
 from .public.resolve import SignatureAlgorithmName
-from .structures.primitives import encode_mpint, encode_name_list, encode_string
+from .structures.primitives import encode_name_list, encode_string
 from .utilities import GeneratorWrapper
 
 
@@ -921,7 +921,7 @@ class Connection:
 
     key_exchange = resolve_key_exchange(algorithm_selection.kex_algorithm)
 
-    exchange_hash, shared_key = yield from key_exchange.run_as_server(
+    exchange_hash, encoded_shared_secret = yield from key_exchange.run_as_server(
       self,
       algorithm_selection=algorithm_selection,
       host_key=host_key,
@@ -936,7 +936,6 @@ class Connection:
       self._session_id = exchange_hash
 
     session_id = self._session_id
-    encoded_shared_secret = encode_mpint(int.from_bytes(shared_key))
 
     def derive_key(letter: bytes, size: int):
       key = key_exchange.hash(encoded_shared_secret + exchange_hash + letter + session_id)

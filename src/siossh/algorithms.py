@@ -16,6 +16,7 @@ type KexAlgorithmName = Literal[
   'ecdh-sha2-nistp256',
   'ecdh-sha2-nistp384',
   'ecdh-sha2-nistp521',
+  'mlkem768x25519-sha256',
 ]
 
 type HostKeyAlgorithmName = Literal[
