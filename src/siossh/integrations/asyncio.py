@@ -56,6 +56,7 @@ class AsyncConnectionClient(Protocol):
 @dataclass(slots=True)
 class AsyncStream:
   read: Callable[[], Awaitable[bytes]]
+  _send_buffer_nonfull_event: Event
   _send_trigger: Event
   _stream: Stream
 
@@ -64,9 +65,18 @@ class AsyncStream:
     self._send_trigger.set()
 
   async def write(self, data: bytes, /, *, error: bool = False):
-    self._stream.write(data, error=error)
-    self._send_trigger.set()
-    # TODO: Actually await here
+    buffer = data
+
+    while buffer:
+      await self._send_buffer_nonfull_event.wait()
+
+      self._stream.write(buffer[:self._stream.window_size], error=error)
+      self._send_trigger.set()
+
+      buffer = buffer[self._stream.window_size:]
+
+      if self._stream.window_size == 0:
+        self._send_buffer_nonfull_event.clear()
 
   @property
   def window_size(self):
@@ -78,6 +88,7 @@ class Session:
   buffer: bytes = field(default=b'', init=False)
   buffer_event: Event = field(default_factory=Event, init=False)
   received_eof: bool = field(default=False, init=False)
+  send_buffer_nonfull_event: Event
 
   client: AsyncSessionClient
   task: Task[None]
@@ -173,8 +184,10 @@ async def attach_async_client(
 
                     await session.buffer_event.wait()
 
-                    chunk = session.buffer[:size]
-                    session.buffer = session.buffer[size:]
+                    effective_size = size if size is not None else len(session.buffer)
+
+                    chunk = session.buffer[:effective_size]
+                    session.buffer = session.buffer[effective_size:]
 
                     if not session.buffer:
                       session.buffer_event.clear()
@@ -185,17 +198,26 @@ async def attach_async_client(
                     return chunk
 
                   stream = event.accept()
-                  task = asyncio.create_task(
+
+                  send_buffer_nonfull_event = Event()
+                  send_buffer_nonfull_event.set()
+
+                  task = group.create_task(
                     session_client.run(
                       AsyncStream(
                         read=session_read,
-                        _stream=stream,
+                        _send_buffer_nonfull_event=send_buffer_nonfull_event,
                         _send_trigger=send_trigger,
+                        _stream=stream,
                       ),
                     ),
                   )
 
-                  sessions[event.channel_id] = Session(client=session_client, task=task)
+                  sessions[event.channel_id] = Session(
+                    client=session_client,
+                    send_buffer_nonfull_event=send_buffer_nonfull_event,
+                    task=task,
+                  )
                 else:
                   event.reject()
 
@@ -217,7 +239,8 @@ async def attach_async_client(
               session.buffer_event.set()
 
             case ChannelWindowAdjustEvent():
-              pass
+              session = sessions[event.channel_id]
+              session.send_buffer_nonfull_event.set()
 
             case PTYSessionTerminalSizeChangeEvent():
               session = sessions[event.channel_id]

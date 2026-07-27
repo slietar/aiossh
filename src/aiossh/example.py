@@ -3,6 +3,7 @@ import logging
 import os
 import shlex
 import signal
+from asyncio import TaskGroup
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +53,7 @@ class SubprocessSessionClient(AsyncSessionClient):
       if not chunk:
         break
 
+      # print(f'Writing chunk to stdout: {chunk!r}')
       await self.stream.write(chunk)
 
   async def _pipe_stderr(self):
@@ -107,7 +109,7 @@ class SubprocessSessionClient(AsyncSessionClient):
     async with subproc as self.subprocess:
       LOGGER.debug(f'Subprocess started with pid {self.subprocess.process.pid}')
 
-      async with asyncio.TaskGroup() as group:
+      async with TaskGroup() as group:
         group.create_task(self._pipe_stdout())
         group.create_task(self._pipe_stderr())
         group.create_task(self._pipe_stdin())
