@@ -44,6 +44,12 @@ class TextualSession:
     if self.driver is not None:
       self.driver.resize(columns, rows)
 
+  def write(self, data: bytes):
+    assert self.stream is not None
+
+    self.stream.write(data)
+    self.send_trigger.set()
+
   async def _pipe_stdin(self):
     await self.driver_ready.wait()
     assert self.driver is not None

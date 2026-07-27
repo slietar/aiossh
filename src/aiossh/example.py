@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 import os
 import shlex
@@ -7,9 +8,10 @@ from asyncio import TaskGroup
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, override
+from typing import Optional, cast, override
 
 import aiodrive
+from textual.driver import Driver
 
 from siossh.connection import Connection, ConnectionSettings
 from siossh.events import SessionPTYOptions
@@ -22,6 +24,8 @@ from siossh.integrations.asyncio import (
 
 from .host_keys import get_host_keys
 from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess
+from .textual_demo import DemoApp
+from .textual_driver import SSHDriver
 
 
 LOGGER = logging.getLogger(__name__)
@@ -121,7 +125,61 @@ class SubprocessSessionClient(AsyncSessionClient):
 
 
 @dataclass(slots=True)
+class TextualSessionClient(AsyncSessionClient):
+  """Runs `DemoApp` in-process, wiring its input/output to the SSH channel's `AsyncStream`."""
+
+  user_name: str
+  client_name: str
+  pty: SessionPTYOptions
+
+  driver: Optional[SSHDriver] = field(default=None, init=False)
+  driver_ready: asyncio.Event = field(default_factory=asyncio.Event, init=False)
+  write_queue: asyncio.Queue[bytes] = field(default_factory=asyncio.Queue, init=False)
+
+  def write(self, data: bytes):
+    self.write_queue.put_nowait(data)
+
+  async def _pipe_stdin(self, stream: AsyncStream):
+    await self.driver_ready.wait()
+    assert self.driver is not None
+
+    while True:
+      chunk = await stream.read()
+
+      if not chunk:
+        break
+
+      self.driver.feed(chunk)
+
+  async def _pipe_stdout(self, stream: AsyncStream):
+    while True:
+      chunk = await self.write_queue.get()
+      await stream.write(chunk)
+
+  @override
+  async def resize(self, window_chars: tuple[int, int], window_pixels: tuple[int, int], /) -> None:
+    if self.driver is not None:
+      self.driver.resize(window_chars[0], window_chars[1])
+
+  @override
+  async def run(self, stream: AsyncStream) -> None:
+    app = DemoApp(user_name=self.user_name, client_name=self.client_name)
+    app.driver_class = cast(type[Driver], functools.partial(SSHDriver, session=self))
+
+    async with aiodrive.volatile_task_group() as group:
+      group.create_task(self._pipe_stdin(stream))
+      group.create_task(self._pipe_stdout(stream))
+
+      await app.run_async(mouse=True, size=self.pty.window_chars)
+
+    LOGGER.debug('Textual app exited')
+
+    stream.exit(0)
+
+
+@dataclass(slots=True)
 class ExampleClient(AsyncConnectionClient):
+  client_name: str
   name: Optional[str] = None
 
   @override
@@ -153,6 +211,13 @@ class ExampleClient(AsyncConnectionClient):
 
   @override
   async def start_shell_session(self, env, pty):
+    if pty is not None:
+      return TextualSessionClient(
+        user_name=self.name or 'anonymous',
+        client_name=self.client_name,
+        pty=pty,
+      )
+
     return SubprocessSessionClient(command=None, env=env, pty=pty)
 
 
@@ -175,7 +240,7 @@ async def tcp_handler(tcp_connection: aiodrive.Connection):
     tcp_connection.writer.write(chunk)
     await tcp_connection.writer.drain()
 
-  client = ExampleClient()
+  client = ExampleClient(client_name=str(tcp_connection.client_name))
 
   await attach_async_client(
     conn,
