@@ -2,11 +2,15 @@ import re
 import unicodedata
 
 
-def normalize(text: str) -> str:
+def normalize_words(text: str) -> list[str]:
   decomposed = unicodedata.normalize('NFKD', text)
   stripped = ''.join(char for char in decomposed if not unicodedata.combining(char))
 
-  return re.sub(r'[^a-z0-9]+', '', stripped.lower())
+  return [word for word in re.split(r'[^a-z0-9]+', stripped.lower()) if word]
+
+
+def normalize(text: str) -> str:
+  return ''.join(normalize_words(text))
 
 
 def levenshtein_distance(a: str, b: str) -> int:
@@ -70,8 +74,10 @@ def substring_distance(pattern: str, text: str) -> int:
 def find_best_station_matches(query: str, station_names: list[str], *, max_relative_distance: float = 0.4) -> list[str]:
   """Return the station names whose normalized text contains the closest match for `query`.
 
-  Returns every name tied for the best distance, or an empty list if the best match is too
-  far from `query` to be a plausible typo/variant.
+  Returns every name tied for the best distance (an empty list if the best match is too far
+  from `query` to be a plausible typo/variant), with names where `query` appears as a whole
+  word listed first — so searching "Paris" ranks "Paris-Est" above "Villeparisis", while
+  still returning both.
   """
 
   normalized_query = normalize(query)
@@ -90,4 +96,6 @@ def find_best_station_matches(query: str, station_names: list[str], *, max_relat
   if best_distance > threshold:
     return []
 
-  return [name for distance, name in scored if distance == best_distance]
+  matches = [name for distance, name in scored if distance == best_distance]
+
+  return sorted(matches, key=lambda name: normalized_query not in normalize_words(name))

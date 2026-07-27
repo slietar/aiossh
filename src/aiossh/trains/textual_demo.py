@@ -3,7 +3,7 @@ from collections.abc import Iterable
 from typing import ClassVar, Optional, override
 
 from textual.app import App, ComposeResult, SystemCommand
-from textual.containers import Container, Vertical
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.theme import Theme
 from textual.widgets import (
@@ -13,7 +13,6 @@ from textual.widgets import (
   Header,
   Input,
   Label,
-  Log,
   Static,
   TabbedContent,
   TabPane,
@@ -24,6 +23,14 @@ from .stations import load_stations
 
 
 _HIDDEN_SYSTEM_COMMANDS = {'Theme', 'Screenshot'}
+
+_SNCF_LOGO = '''\
+    ██████  ██   █  ██████  ██████
+   ██      ███  █  ██      ██
+  ██████  ██ █ █  ██      █████
+     ██  ██  ██  ██      ██
+██████  ██   █  ██████  ██
+──────────────────────────────────'''
 
 _BLUE_GREY_THEME = Theme(
   name='blue-grey',
@@ -88,6 +95,7 @@ class TrainSearchPane(Vertical):
 
   TrainSearchPane #train-search-choices {
     width: auto;
+    max-height: 80%;
     padding: 1 2;
     border: round $accent;
   }
@@ -119,14 +127,14 @@ class TrainSearchPane(Vertical):
 
   async def _show_form(self, *, error: Optional[str] = None):
     children: list[Static | Label | Input | Button] = [
-      Label('Departure station'),
-      Input(id='departure-station-input', placeholder='e.g. Paris'),
+      Label('Gare de départ'),
+      Input(id='departure-station-input', placeholder='ex. Paris'),
     ]
 
     if error is not None:
       children.append(Static(error, classes='train-search-error'))
 
-    children.append(Button('Search', id='train-search-submit'))
+    children.append(Button('Rechercher', id='train-search-submit'))
 
     await self.remove_children()
     await self.mount(Container(*children, id='train-search-form'))
@@ -135,28 +143,28 @@ class TrainSearchPane(Vertical):
   async def _show_choices(self, candidates: list[str]):
     self._candidates = candidates
 
-    children = [Static('Several stations match — pick one:')]
+    children = [Static('Plusieurs gares correspondent — choisissez-en une :')]
     children += [
       Button(name, id=f'train-search-choice-{index}')
       for index, name in enumerate(candidates)
     ]
-    children.append(Button('Back', id='train-search-back'))
+    children.append(Button('Retour', id='train-search-back'))
 
     await self.remove_children()
-    await self.mount(Container(*children, id='train-search-choices'))
+    await self.mount(VerticalScroll(*children, id='train-search-choices'))
 
   async def _show_results(self, station: str):
     table = DataTable(id='train-results')
-    table.add_columns('Train N°', 'Departure time', 'Destination')
+    table.add_columns('N° de train', 'Heure de départ', 'Destination')
 
     for train_number, departure_time, destination in _DUMMY_TRAINS:
       table.add_row(train_number, departure_time, destination)
 
     await self.remove_children()
     await self.mount(Container(
-      Static(f'Trains from {station}', id='train-results-title'),
+      Static(f'Trains au départ de {station}', id='train-results-title'),
       table,
-      Button('New search', id='train-search-again'),
+      Button('Nouvelle recherche', id='train-search-again'),
       id='train-results-container',
     ))
 
@@ -164,7 +172,7 @@ class TrainSearchPane(Vertical):
     candidates = find_best_station_matches(query, _station_names())
 
     if not candidates:
-      await self._show_form(error=f'No station found matching "{query}".')
+      await self._show_form(error=f'Aucune gare ne correspond à « {query} ».')
     elif len(candidates) == 1:
       await self._show_results(candidates[0])
     else:
@@ -203,15 +211,23 @@ class DemoApp(App):
     padding: 1 2;
     border: round $accent;
   }
+
+  #logo {
+    width: auto;
+    color: $primary;
+    text-style: bold;
+    margin-bottom: 1;
+  }
   '''
 
-  BINDINGS: ClassVar = [('q', 'quit', 'Quit')]
+  BINDINGS: ClassVar = [('q', 'quit', 'Quitter')]
 
   def __init__(self, *, user_name: str, client_name: str):
     super().__init__()
 
     self.user_name = user_name
     self.client_name = client_name
+    self.title = 'Trains SNCF'
 
     self.register_theme(_BLUE_GREY_THEME)
     self.theme = _BLUE_GREY_THEME.name
@@ -221,29 +237,16 @@ class DemoApp(App):
     yield Header()
 
     with TabbedContent():
-      with TabPane('Welcome', id='welcome'):
+      with TabPane('Bienvenue', id='welcome'):
         with Vertical():
-          yield Static(f'Hello, {self.user_name}!\nConnected from {self.client_name} via aiossh.', id='greeting')
-          yield Button('Quit', id='quit')
+          yield Static(_SNCF_LOGO, id='logo')
+          yield Static(f'Bonjour, {self.user_name} !\nConnecté depuis {self.client_name} via aiossh.', id='greeting')
+          yield Button('Quitter', id='quit')
 
-      with TabPane('Table', id='table'):
-        yield DataTable(id='table-widget')
-
-      with TabPane('Log', id='log'):
-        yield Log(id='log-widget')
-
-      with TabPane('Train search', id='train-search'):
+      with TabPane('Recherche de train', id='train-search'):
         yield TrainSearchPane()
 
     yield Footer()
-
-  def on_mount(self):
-    table = self.query_one('#table-widget', DataTable)
-    table.add_columns('Name', 'Client')
-    table.add_row(self.user_name, self.client_name)
-
-    log = self.query_one('#log-widget', Log)
-    log.write_line(f'{self.user_name} connected from {self.client_name}')
 
   def on_button_pressed(self, event: Button.Pressed):
     if event.button.id == 'quit':
