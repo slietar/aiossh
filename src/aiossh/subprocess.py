@@ -13,11 +13,10 @@ from asyncio import StreamReader, TaskGroup
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, override
+from typing import Optional, Protocol, override
 
 import aiodrive
 
-from siossh.stream import AsyncReadableStreamProtocol
 from siossh.terminal_modes import TerminalModes
 
 from .termios_modes import apply_terminal_modes
@@ -144,6 +143,15 @@ class RegularSubprocess(Subprocess):
       if subprocess is not None:
         subprocess.code = 0
 
+
+class AsyncReadableStreamProtocol(Protocol):
+  # Does not allow for parallel reads
+
+  __slots__ = ()
+
+  # Still using -1 as the default for compatibility with StreamReader
+  async def read(self, byte_count: int = -1, /) -> bytes:
+    ...
 
 async def iter_reader(reader: AsyncReadableStreamProtocol, /, *, chunk_size: int = 65_536):
   while True:

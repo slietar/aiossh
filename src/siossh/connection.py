@@ -95,7 +95,7 @@ MAX_DATA_MESSAGE_SIZE = 10000
 
 
 @dataclass(kw_only=True, slots=True)
-class SansIOConnectionSettings:
+class ConnectionSettings:
   host_keys: list[PrivateKey]
   software_version: str
   supported_algorithms: AlgorithmSets = field(default_factory=AlgorithmSets)
@@ -133,7 +133,7 @@ class SessionInnerChannel:
 @dataclass(kw_only=True)
 class Connection:
   debug: bool
-  settings: SansIOConnectionSettings
+  settings: ConnectionSettings
 
   _authenticated: bool = field(default=False, init=False)
   _terminated: bool = field(default=False, init=False)
@@ -581,30 +581,11 @@ class Connection:
 
           channel = self._channels.get(message.recipient_channel_id)
 
-          if (channel is None) or channel.dead:
+          if channel is None:
             raise ProtocolError
 
           channel.queued_messages.append(message)
           self._receive_channel_messages(channel)
-
-        case ChannelCloseMessage.id:
-          if (self._handler_in is None) or (self._key_exchange is not None) or (not self._authenticated):
-            raise ProtocolError
-
-          message = message_stub.decode(ChannelCloseMessage)
-          channel = self._channels.get(message.recipient_channel_id)
-
-          if channel is None:
-            raise ProtocolError
-
-          if not channel.dead:
-            self._send_message(
-              ChannelCloseMessage(
-                recipient_channel_id=channel.remote_id,
-              ),
-            )
-
-          del self._channels[message.recipient_channel_id]
 
         case _:
           self._disconnect(DisconnectReason.ProtocolError, f'Unsupported message id {message_stub.id}')
@@ -619,12 +600,34 @@ class Connection:
         raise
 
   def _receive_channel_messages(self, channel: Channel):
-    while channel.queued_messages and not channel.busy: # TODO: Why the channel.busy check?
+    while channel.queued_messages and not channel.busy:
       message = channel.queued_messages.popleft()
       # print(f'Processing queued message {message} for channel with remote id {channel.remote_id}')
 
       match message:
+        case ChannelCloseMessage.id:
+          if not channel.dead:
+            self._send_message(
+              ChannelCloseMessage(
+                recipient_channel_id=channel.remote_id,
+              ),
+            )
+
+            self._events.append(
+              ChannelCloseEvent(
+                channel_id=channel.local_id,
+              ),
+            )
+
+          del self._channels[channel.local_id]
+
+          if channel.queued_messages:
+            raise ProtocolError
+
         case ChannelDataMessage():
+          if channel.dead:
+            raise ProtocolError
+
           if len(message.data) > channel.local_max_packet_size:
             raise ProtocolError
 
@@ -641,6 +644,9 @@ class Connection:
           )
 
         case ChannelWindowAdjustMessage():
+          if channel.dead:
+            raise ProtocolError
+
           if channel.remote_remaining_window_size > (2**32 - 1) - message.bytes_to_add:
             raise ProtocolError
 
@@ -653,6 +659,9 @@ class Connection:
           )
 
         case ChannelEofMessage():
+          if channel.dead:
+            raise ProtocolError
+
           self._events.append(
             ChannelEofEvent(
               channel_id=channel.local_id,
@@ -660,6 +669,9 @@ class Connection:
           )
 
         case ChannelRequestMessage():
+          if channel.dead:
+            raise ProtocolError
+
           match message.details:
             case ChannelRequestDetailsExec() | ChannelRequestDetailsShell():
               def exit(exit_status: int):
@@ -677,12 +689,6 @@ class Connection:
                 self._send_or_queue_message(
                   ChannelCloseMessage(
                     recipient_channel_id=channel.remote_id,
-                  ),
-                )
-
-                self._events.append(
-                  ChannelCloseEvent(
-                    channel_id=channel.local_id,
                   ),
                 )
 

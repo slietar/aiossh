@@ -22,6 +22,14 @@ class AuthWithPublicKeyRequestEvent:
 
 @dataclass(slots=True)
 class DisconnectEvent:
+  """
+  An event emitted when the connection is disconnected with a message, whether
+  it was initiated by the other party or locally.
+
+  No event follows this event, and the connection is considered closed after
+  this event is emitted.
+  """
+
   reason: int
   description: str
 
@@ -51,6 +59,10 @@ class ChannelOpenEvent:
 
 @dataclass(slots=True)
 class ChannelCloseEvent:
+  """
+  An event emitted when a channel is explicitly closed by the other party.
+  """
+
   channel_id: int
 
 

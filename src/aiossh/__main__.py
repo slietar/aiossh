@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import pickle
 import shlex
 import signal
 from asyncio import Event
@@ -11,7 +10,7 @@ from typing import Optional
 
 import aiodrive
 
-from siossh.connection import Connection, SansIOConnectionSettings
+from siossh.connection import Connection, ConnectionSettings
 from siossh.error import ConnectionTerminatedError, UnreachableError
 from siossh.events import (
   AuthWithPasswordRequestEvent,
@@ -26,34 +25,14 @@ from siossh.events import (
   SessionShellEvent,
   Stream,
 )
-from siossh.public.base import PrivateKey
-from siossh.public.rsa import RSAPrivateKey
 
+from .host_keys import get_host_keys
 from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess
 from .textual_demo import DemoApp
 from .textual_session import TextualSession
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-def get_host_keys():
-  host_keys_path = Path('tmp/keys.pkl')
-
-  if host_keys_path.exists():
-    with host_keys_path.open('rb') as file:
-      host_keys: list[PrivateKey] = pickle.load(file)
-  else:
-    host_keys: list[PrivateKey] = [
-      RSAPrivateKey.generate(),
-    ]
-
-    host_keys_path.parent.mkdir(exist_ok=True, parents=True)
-
-    with host_keys_path.open('wb') as file:
-      pickle.dump(host_keys, file)
-
-  return host_keys
 
 
 @dataclass(slots=True)
@@ -88,7 +67,6 @@ class Shell:
         break
 
       self.stream.write(chunk)
-      self.send_trigger.set()
 
   async def _pipe_stderr(self):
     assert self.subprocess is not None
@@ -104,7 +82,6 @@ class Shell:
         break
 
       self.stream.write(chunk, error=True)
-      self.send_trigger.set()
 
   async def _pipe_stdin(self):
     assert self.subprocess is not None
@@ -120,7 +97,6 @@ class Shell:
       await self.subprocess.write(chunk)
 
       self.stream.reset_window()
-      self.send_trigger.set()
 
   async def start(self, event: SessionExecEvent | SessionShellEvent):
     match event:
@@ -154,7 +130,6 @@ class Shell:
       self.stream = event.accept()
 
       self.event_trigger.set()
-      self.send_trigger.set()
 
       async with asyncio.TaskGroup() as group:
         group.create_task(self._pipe_stdout())
@@ -166,7 +141,6 @@ class Shell:
 
     assert self.subprocess.code is not None
     self.stream.exit(self.subprocess.code)
-    self.send_trigger.set()
 
 
 
@@ -178,7 +152,7 @@ async def main():
 
     conn = Connection(
       debug=True,
-      settings=SansIOConnectionSettings(
+      settings=ConnectionSettings(
         host_keys=get_host_keys(),
         software_version='aiossh_0.0.0',
         supported_auth_methods=['publickey'],
