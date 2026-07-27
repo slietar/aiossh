@@ -77,6 +77,11 @@ class ChannelEofEvent:
 
 @dataclass(slots=True)
 class ChannelWindowAdjustEvent:
+  """
+  An event emitted when the other party adjusts the size of its reception
+  window.
+  """
+
   channel_id: int
 
 

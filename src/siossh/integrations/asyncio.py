@@ -1,7 +1,7 @@
 import asyncio
 from asyncio import Event, Task
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 import aiodrive
@@ -25,14 +25,11 @@ from ..events import (
 )
 
 
-class SessionClient(Protocol):
-  async def receive(self, chunk: bytes, /) -> None:
-    ...
-
+class AsyncSessionClient(Protocol):
   async def resize(self, window_chars: tuple[int, int], window_pixels: tuple[int, int], /) -> None:
     ...
 
-  async def run(self, stream: Stream) -> None:
+  async def run(self, stream: AsyncStream) -> None:
     ...
 
 
@@ -49,16 +46,40 @@ class AsyncConnectionClient(Protocol):
   async def disconnect(self, reason: int, description: str) -> None:
     ...
 
-  async def start_exec_session(self, command: str, env: Mapping[str, str], pty: Optional[SessionPTYOptions]) -> Optional[SessionClient]:
+  async def start_exec_session(self, command: str, env: Mapping[str, str], pty: Optional[SessionPTYOptions]) -> Optional[AsyncSessionClient]:
     ...
 
-  async def start_shell_session(self, env: Mapping[str, str], pty: Optional[SessionPTYOptions]) -> Optional[SessionClient]:
+  async def start_shell_session(self, env: Mapping[str, str], pty: Optional[SessionPTYOptions]) -> Optional[AsyncSessionClient]:
     ...
 
 
 @dataclass(slots=True)
+class AsyncStream:
+  read: Callable[[], Awaitable[bytes]]
+  _send_trigger: Event
+  _stream: Stream
+
+  def exit(self, code: int):
+    self._stream.exit(code)
+    self._send_trigger.set()
+
+  async def write(self, data: bytes, /, *, error: bool = False):
+    self._stream.write(data, error=error)
+    self._send_trigger.set()
+    # TODO: Actually await here
+
+  @property
+  def window_size(self):
+    return self._stream.window_size
+
+
+@dataclass(slots=True)
 class Session:
-  client: SessionClient
+  buffer: bytes = field(default=b'', init=False)
+  buffer_event: Event = field(default_factory=Event, init=False)
+  received_eof: bool = field(default=False, init=False)
+
+  client: AsyncSessionClient
   task: Task[None]
 
 async def attach_async_client(
@@ -129,17 +150,51 @@ async def attach_async_client(
 
             # Session initialization
 
-            case SessionExecEvent():
-              async def handle_session_exec_event(event: SessionExecEvent):
-                session_client = await client.start_exec_session(
-                  event.command,
-                  event.env,
-                  event.pty,
-                )
+            case SessionExecEvent() | SessionShellEvent():
+              async def handle_session_exec_event(event: SessionExecEvent | SessionShellEvent):
+                if isinstance(event, SessionExecEvent):
+                  session_client = await client.start_exec_session(
+                    event.command,
+                    event.env,
+                    event.pty,
+                  )
+                else:
+                  session_client = await client.start_shell_session(
+                    event.env,
+                    event.pty,
+                  )
 
                 if session_client is not None:
+                  async def session_read(size: Optional[int] = None):
+                    session = sessions[event.channel_id]
+
+                    if session.received_eof:
+                      return b''
+
+                    await session.buffer_event.wait()
+
+                    chunk = session.buffer[:size]
+                    session.buffer = session.buffer[size:]
+
+                    if not session.buffer:
+                      session.buffer_event.clear()
+
+                    stream.reset_window()
+                    send_trigger.set()
+
+                    return chunk
+
                   stream = event.accept()
-                  task = asyncio.create_task(session_client.run(stream))
+                  task = asyncio.create_task(
+                    session_client.run(
+                      AsyncStream(
+                        read=session_read,
+                        _stream=stream,
+                        _send_trigger=send_trigger,
+                      ),
+                    ),
+                  )
+
                   sessions[event.channel_id] = Session(client=session_client, task=task)
                 else:
                   event.reject()
@@ -148,34 +203,18 @@ async def attach_async_client(
 
               group.create_task(handle_session_exec_event(event))
 
-            case SessionShellEvent():
-              async def handle_session_shell_event(event: SessionShellEvent):
-                session_client = await client.start_shell_session(
-                  event.env,
-                  event.pty,
-                )
-
-                if session_client is not None:
-                  stream = event.accept()
-                  task = asyncio.create_task(session_client.run(stream))
-                  sessions[event.channel_id] = Session(client=session_client, task=task)
-                else:
-                  event.reject()
-
-                send_trigger.set()
-
-              group.create_task(handle_session_shell_event(event))
-
 
             # Session data processing
 
             case ChannelDataEvent():
               session = sessions[event.channel_id]
-              await session.client.receive(event.chunk)
+              session.buffer += event.chunk
+              session.buffer_event.set()
 
             case ChannelEofEvent():
               session = sessions[event.channel_id]
-              await session.client.receive(b'')
+              session.received_eof = True
+              session.buffer_event.set()
 
             case ChannelWindowAdjustEvent():
               pass

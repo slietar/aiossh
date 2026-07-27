@@ -518,7 +518,7 @@ class Connection:
             channel = Channel(
               inner=inner_channel,
 
-              local_id=self._next_channel_id,
+              local_id=channel_id,
               remote_id=message.sender_channel_id,
 
               local_max_packet_size=MAX_DATA_MESSAGE_SIZE,
@@ -562,12 +562,14 @@ class Connection:
             ),
           )
 
-        case ChannelRequestMessage.id | ChannelWindowAdjustMessage.id | ChannelDataMessage.id | ChannelEofMessage.id:
+        case ChannelCloseMessage.id | ChannelRequestMessage.id | ChannelWindowAdjustMessage.id | ChannelDataMessage.id | ChannelEofMessage.id:
           if (self._handler_in is None) or (self._key_exchange is not None) or (not self._authenticated):
             raise ProtocolError
 
           # TODO: Allow decode() to accept and return a union
           match message_stub.id:
+            case ChannelCloseMessage.id:
+              message = message_stub.decode(ChannelCloseMessage)
             case ChannelRequestMessage.id:
               message = message_stub.decode(ChannelRequestMessage)
             case ChannelWindowAdjustMessage.id:
@@ -605,7 +607,7 @@ class Connection:
       # print(f'Processing queued message {message} for channel with remote id {channel.remote_id}')
 
       match message:
-        case ChannelCloseMessage.id:
+        case ChannelCloseMessage():
           if not channel.dead:
             self._send_message(
               ChannelCloseMessage(
