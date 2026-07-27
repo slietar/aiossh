@@ -84,17 +84,6 @@ class UserAuthRequestDetailsPublicKey(CodableABC):
       signature=(decode_string(reader) if contains_signature else None),
     )
 
-  def encode_signed(self):
-    return (
-      bytes([self.id])
-      + encode_text(self.user_name)
-      + encode_text(self.service_name)
-      + encode_name('publickey')
-      + encode_boolean(True)
-      + encode_name(self.algorithm)
-      + encode_string(self.public_key)
-    )
-
 @dataclass(kw_only=True, slots=True)
 class UserAuthRequestDetailsPassword(CodableABC):
   key: ClassVar[str] = 'password'

@@ -9,11 +9,15 @@ requires-python = ">=3.14"
 dependencies = [
     "aiodrive~=5.1",
     "cryptography~=49.0",
+    "textual>=8.2.8",
     "umac~=2.0",
 ]
 
 [tool.oryn]
 include = ["src/*"]
+
+[tool.ty.rules]
+missing-override-decorator = "error"
 
 [tool.ruff]
 indent-width = 2

@@ -30,6 +30,8 @@ from siossh.public.base import PrivateKey
 from siossh.public.rsa import RSAPrivateKey
 
 from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess
+from .textual_demo import DemoApp
+from .textual_session import TextualSession
 
 
 LOGGER = logging.getLogger(__name__)
@@ -183,7 +185,8 @@ async def main():
       ),
     )
 
-    shells = dict[int, Shell]()
+    shells = dict[int, Shell | TextualSession]()
+    user_name: Optional[str] = None
 
     event_trigger = Event()
     send_trigger = Event()
@@ -210,9 +213,9 @@ async def main():
                 LOGGER.info(f'Disconnect event with reason {reason} and description "{description}"')
                 return
 
-              case AuthWithPasswordRequestEvent():
+              case AuthWithPasswordRequestEvent(user_name=user_name):
                 event.respond(True)
-              case AuthWithPublicKeyRequestEvent():
+              case AuthWithPublicKeyRequestEvent(user_name=user_name):
                 event.respond(True)
 
               case ChannelCloseEvent():
@@ -230,6 +233,16 @@ async def main():
                 shells[event.channel_id] = shell
 
                 group.create_task(shell.start(event))
+              case SessionShellEvent(pty=pty) if pty is not None:
+                app = DemoApp(
+                  user_name=user_name or 'anonymous',
+                  client_name=str(tcp_connection.client_name),
+                )
+
+                session = TextualSession(event_trigger=event_trigger, send_trigger=send_trigger)
+                shells[event.channel_id] = session
+
+                group.create_task(session.start(event, app))
               case SessionShellEvent():
                 shell = Shell(event_trigger=event_trigger, send_trigger=send_trigger)
                 shells[event.channel_id] = shell
