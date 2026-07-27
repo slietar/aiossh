@@ -24,8 +24,8 @@ from siossh.integrations.asyncio import (
 
 from .host_keys import get_host_keys
 from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess
-from .textual_demo import DemoApp
 from .textual_driver import SSHDriver
+from .trains.textual_demo import DemoApp
 
 
 LOGGER = logging.getLogger(__name__)
