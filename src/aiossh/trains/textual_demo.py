@@ -9,8 +9,6 @@ from textual.theme import Theme
 from textual.widgets import (
   Button,
   DataTable,
-  Footer,
-  Header,
   Input,
   Label,
   Static,
@@ -32,19 +30,19 @@ _SNCF_LOGO = '''\
 ██████  ██   █  ██████  ██
 ──────────────────────────────────'''
 
-_BLUE_GREY_THEME = Theme(
-  name='blue-grey',
-  primary='#4d9cff',
-  secondary='#8fa8c4',
-  accent='#4d9cff',
-  warning='#8fa8c4',
-  error='#6a7d94',
-  success='#4d9cff',
-  foreground='#c8d2dc',
-  background='#05070a',
-  surface='#0c1016',
-  panel='#131922',
-  boost='#1a212c',
+_TERMINAL_MONO_THEME = Theme(
+  name='terminal-mono',
+  primary='#f2f2ed',
+  secondary='#8a8a85',
+  accent='#f2f2ed',
+  warning='#b0a06a',
+  error='#b07a7a',
+  success='#f2f2ed',
+  foreground='#d8d8d2',
+  background='#000000',
+  surface='#050505',
+  panel='#0a0a0a',
+  boost='#111111',
   dark=True,
 )
 
@@ -77,11 +75,12 @@ class TrainSearchPane(Vertical):
   TrainSearchPane #train-search-form {
     width: auto;
     padding: 1 2;
-    border: round $accent;
+    border: solid $primary;
   }
 
   TrainSearchPane #train-search-form Label {
     margin-top: 1;
+    text-style: none;
   }
 
   TrainSearchPane #train-search-form Input {
@@ -97,7 +96,7 @@ class TrainSearchPane(Vertical):
     width: auto;
     max-height: 80%;
     padding: 1 2;
-    border: round $accent;
+    border: solid $primary;
   }
 
   TrainSearchPane #train-search-choices Button {
@@ -108,7 +107,7 @@ class TrainSearchPane(Vertical):
   TrainSearchPane #train-results-container {
     width: auto;
     padding: 1 2;
-    border: round $accent;
+    border: solid $primary;
   }
 
   TrainSearchPane #train-results-container #train-results-title {
@@ -202,21 +201,67 @@ class DemoApp(App):
   """A minimal Textual app, served directly over the SSH connection via `SSHDriver`."""
 
   CSS = '''
+  Screen {
+    background: $background;
+  }
+
   Vertical {
     align: center middle;
+  }
+
+  #banner {
+    width: 100%;
+    content-align: center middle;
+    color: $primary;
+    text-style: bold;
+  }
+
+  TabbedContent {
+    background: $background;
+    height: 1fr;
+  }
+
+  Tabs {
+    background: $background;
+  }
+
+  Tab {
+    text-style: none;
+  }
+
+  Underline {
+    color: $primary;
+  }
+
+  Button {
+    background: $background;
+    color: $primary;
+    border: solid $primary;
+    text-style: none;
+    min-width: 1;
+  }
+
+  Button:hover {
+    background: $primary;
+    color: $background;
+    border: solid $primary;
+  }
+
+  Button:focus {
+    text-style: bold;
   }
 
   #greeting {
     width: auto;
     padding: 1 2;
-    border: round $accent;
+    border: solid $primary;
   }
 
-  #logo {
-    width: auto;
-    color: $primary;
-    text-style: bold;
-    margin-bottom: 1;
+  #hint-bar {
+    width: 100%;
+    content-align: center middle;
+    color: $secondary;
+    padding-bottom: 1;
   }
   '''
 
@@ -229,24 +274,23 @@ class DemoApp(App):
     self.client_name = client_name
     self.title = 'Trains SNCF'
 
-    self.register_theme(_BLUE_GREY_THEME)
-    self.theme = _BLUE_GREY_THEME.name
+    self.register_theme(_TERMINAL_MONO_THEME)
+    self.theme = _TERMINAL_MONO_THEME.name
 
   @override
   def compose(self) -> ComposeResult:
-    yield Header()
+    yield Static(_SNCF_LOGO, id='banner')
 
     with TabbedContent():
       with TabPane('Bienvenue', id='welcome'):
         with Vertical():
-          yield Static(_SNCF_LOGO, id='logo')
           yield Static(f'Bonjour, {self.user_name} !\nConnecté depuis {self.client_name} via aiossh.', id='greeting')
           yield Button('Quitter', id='quit')
 
       with TabPane('Recherche de train', id='train-search'):
         yield TrainSearchPane()
 
-    yield Footer()
+    yield Static("q quitter · tab / maj+tab changer d'onglet", id='hint-bar')
 
   def on_button_pressed(self, event: Button.Pressed):
     if event.button.id == 'quit':
