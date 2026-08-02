@@ -9,6 +9,8 @@ requires-python = ">=3.14"
 dependencies = [
     "aiodrive~=5.1",
     "cryptography~=49.0",
+    "httpx>=0.28.1",
+    "polars>=1.43.1",
     "textual>=8.2.8",
     "umac~=2.0",
 ]

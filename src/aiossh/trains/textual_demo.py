@@ -1,7 +1,10 @@
 import functools
+import re
 from collections.abc import Iterable
+from datetime import datetime, timedelta
 from typing import ClassVar, Optional, override
 
+import polars as pl
 from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import Screen
@@ -16,6 +19,7 @@ from textual.widgets import (
   TabPane,
 )
 
+from .departures import fetch_departures
 from .matching import find_best_station_matches
 from .stations import load_stations
 
@@ -28,7 +32,7 @@ _SNCF_LOGO = '''\
   ██████  ██ █ █  ██      █████
      ██  ██  ██  ██      ██
 ██████  ██   █  ██████  ██
-──────────────────────────────────'''
+'''
 
 _TERMINAL_MONO_THEME = Theme(
   name='terminal-mono',
@@ -48,17 +52,27 @@ _TERMINAL_MONO_THEME = Theme(
 
 
 @functools.cache
+def _stations() -> pl.DataFrame:
+  return load_stations()
+
+
 def _station_names() -> list[str]:
-  return load_stations()['name'].to_list()
+  return _stations()['name'].to_list()
 
 
-_DUMMY_TRAINS = [
-  ('8451', '08:12', 'Nice'),
-  ('6724', '09:47', 'Nantes'),
-  ('5310', '11:05', 'Paris'),
-  ('9182', '13:30', 'Nice'),
-  ('2247', '16:58', 'Nantes'),
-]
+def _station_code(name: str) -> str:
+  return _stations().filter(pl.col('name') == name)['code'].item()
+
+
+def _strip_short_name(destination: str) -> str:
+  """Strip the trailing " (Short name)" suffix that the SNCF API adds to destination names."""
+
+  return re.sub(r' \([^()]*\)$', '', destination)
+
+
+def _line_label(row: dict) -> str:
+  line = row['line'] or row['network']
+  return f'TER {line}' if row['physical_mode'] == 'TER / Intercités' else line
 
 
 class TrainSearchPane(Vertical):
@@ -117,6 +131,10 @@ class TrainSearchPane(Vertical):
   TrainSearchPane #train-results-container Button {
     margin-top: 1;
   }
+
+  TrainSearchPane #train-results-container #train-results-status.train-search-error {
+    color: $error;
+  }
   '''
 
   _candidates: list[str]
@@ -153,19 +171,39 @@ class TrainSearchPane(Vertical):
     await self.mount(VerticalScroll(*children, id='train-search-choices'))
 
   async def _show_results(self, station: str):
-    table = DataTable(id='train-results')
-    table.add_columns('N° de train', 'Heure de départ', 'Destination')
-
-    for train_number, departure_time, destination in _DUMMY_TRAINS:
-      table.add_row(train_number, departure_time, destination)
-
     await self.remove_children()
     await self.mount(Container(
       Static(f'Trains au départ de {station}', id='train-results-title'),
-      table,
+      Static('Chargement des horaires…', id='train-results-status'),
       Button('Nouvelle recherche', id='train-search-again'),
       id='train-results-container',
     ))
+
+    try:
+      departures = await fetch_departures(
+        _station_code(station),
+        from_datetime=datetime.now() - timedelta(minutes=30),
+        duration=timedelta(hours=5, minutes=30),
+        count=200,
+      )
+    except Exception as error:
+      self.query_one('#train-results-status', Static).update(f'Erreur : {error}')
+      self.query_one('#train-results-status', Static).add_class('train-search-error')
+      return
+
+    table = DataTable(id='train-results')
+    table.add_columns('Heure de départ', 'N° de train', 'Ligne', 'Destination')
+
+    for row in departures.iter_rows(named=True):
+      table.add_row(
+        row['departure_time'].strftime('%H:%M'),
+        row['train_number'],
+        _line_label(row),
+        _strip_short_name(row['direction']),
+      )
+
+    await self.query_one('#train-results-status', Static).remove()
+    await self.query_one('#train-results-container', Container).mount(table, before='#train-search-again')
 
   async def _submit_search(self, query: str):
     candidates = find_best_station_matches(query, _station_names())
@@ -214,6 +252,7 @@ class DemoApp(App):
     content-align: center middle;
     color: $primary;
     text-style: bold;
+    margin: 1 0;
   }
 
   TabbedContent {
@@ -249,6 +288,11 @@ class DemoApp(App):
 
   Button:focus {
     text-style: bold;
+  }
+
+  TrainSearchPane Button:focus {
+    background: $primary;
+    color: $background;
   }
 
   #greeting {
