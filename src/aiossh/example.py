@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import functools
 import logging
@@ -25,7 +26,6 @@ from siossh.integrations.asyncio import (
 
 from .host_keys import get_host_keys
 from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess
-from .tailscale_integration import tailscale_connection
 from .textual_driver import SSHDriver
 from .trains.textual_demo import DemoApp
 
@@ -239,8 +239,7 @@ async def tcp_handler(tcp_connection: aiodrive.Connection):
     return await tcp_connection.reader.read(65_536)
 
   async def write(chunk: bytes):
-    tcp_connection.writer.write(chunk)
-    await tcp_connection.writer.drain()
+    await tcp_connection.writer.write(chunk)
 
   client = ExampleClient(client_name=str(tcp_connection.client_name))
 
@@ -252,25 +251,28 @@ async def tcp_handler(tcp_connection: aiodrive.Connection):
   )
 
 
+def parse_args():
+  parser = argparse.ArgumentParser()
+  parser.add_argument(
+    '--tailscale-key-file',
+    type=Path,
+    default=None,
+    help='Path to the Tailscale key file. If set, listen on a Tailscale device instead of a plain TCP socket.',
+  )
+
+  return parser.parse_args()
+
+
 async def main():
-  os.environ['TS_RS_EXPERIMENT'] = 'this_is_unstable_software'
+  args = parse_args()
 
   try:
     with aiodrive.handle_signal([signal.SIGINT, signal.SIGTERM]):
-      # async with aiodrive.TCPServer.listen(
-      #   tcp_handler,
-      #   host=['0.0.0.0'],
-      #   port=1302,
-      # ) as tcp_server:
-      #   for binding in tcp_server.bindings:
-      #     LOGGER.info(f'Listening on {binding}')
+      if args.tailscale_key_file is not None:
+        os.environ['TS_RS_EXPERIMENT'] = 'this_is_unstable_software'
 
-      #   await aiodrive.wait_forever()
-
-      # TODO: aiodrive.rooted_task_group()
-      async with aiodrive.volatile_task_group() as group:
         device = await tailscale.connect(
-          'a.json',
+          str(args.tailscale_key_file),
           auth_key=os.environ['TS_AUTH_KEY'],
           control_server_url=os.environ['TS_CONTROL_SERVER_URL'],
         )
@@ -278,14 +280,24 @@ async def main():
         addr = await device.ipv4_addr()
         print(f'Tailscale device connected with IPv4 address: {addr}')
 
-        listener = await device.tcp_listen(
-          (addr, 22),
+        context = aiodrive.TCPServer.listen_tailscale(
+          tcp_handler,
+          str(addr),
+          device=device,
+          port=22,
+        )
+      else:
+        context = aiodrive.TCPServer.listen(
+          tcp_handler,
+          '0.0.0.0',
+          port=1302,
         )
 
-        while True:
-          stream = await listener.accept()
-          group.create_task(tcp_handler(tailscale_connection(stream)))
+      async with context as tcp_server:
+        for binding in tcp_server.bindings:
+          LOGGER.info(f'Listening on {binding}')
 
+        await aiodrive.wait_forever()
 
   except aiodrive.SignalHandledException as e:
     print('\r', end='')
