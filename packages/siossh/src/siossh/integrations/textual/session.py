@@ -5,11 +5,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, cast
 
-from textual.driver import Driver
-
 from siossh.events import SessionShellEvent, Stream
 
-from .textual_driver import SSHDriver
+from textual.driver import Driver
+
+from .driver import SSHDriver
 
 
 if TYPE_CHECKING:

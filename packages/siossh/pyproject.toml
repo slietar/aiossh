@@ -1,0 +1,26 @@
+[build-system]
+requires = ["oryn~=2.1"]
+build-backend = "oryn"
+
+[project]
+name = "siossh"
+version = "0.0"
+requires-python = ">=3.14"
+dependencies = [
+    "cryptography>=49.0",
+    "umac~=2.0",
+]
+
+[project.optional-dependencies]
+asyncio = [
+    "aiodrive~=5.1",
+]
+textual = [
+    "textual>=8.2.8",
+]
+
+[tool.oryn]
+include = ["src/*"]
+
+[tool.uv.sources]
+aiodrive = { path = "../../../aiodrive", editable = true }

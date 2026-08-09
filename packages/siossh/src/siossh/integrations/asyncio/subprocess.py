@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Optional, Protocol, override
 
 import aiodrive
-
 from siossh.terminal_modes import TerminalModes
 
 from .termios_modes import apply_terminal_modes

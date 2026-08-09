@@ -6,9 +6,9 @@ from typing import Optional, Protocol
 
 import aiodrive
 
-from ..connection import Connection
-from ..error import ConnectionTerminatedError
-from ..events import (
+from ...connection import Connection
+from ...error import ConnectionTerminatedError
+from ...events import (
   AuthWithPasswordRequestEvent,
   AuthWithPublicKeyRequestEvent,
   ChannelCloseEvent,

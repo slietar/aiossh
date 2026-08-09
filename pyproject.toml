@@ -1,29 +1,15 @@
-[build-system]
-requires = ["oryn~=2.1"]
-build-backend = "oryn"
+[dependency-groups]
+dev = ["ruff"]
 
-[project]
-name = "aiossh"
-version = "0.0"
-requires-python = ">=3.14"
-dependencies = [
-    "aiodrive~=5.1",
-    "cryptography~=49.0",
-    "httpx>=0.28.1",
-    "polars>=1.43.1",
-    "tailscale-py>=0.4.0",
-    "textual>=8.2.8",
-    "umac~=2.0",
-]
-
-[tool.oryn]
-include = ["src/*"]
+[tool.uv.workspace]
+members = ["packages/*"]
 
 [tool.ty.rules]
 missing-override-decorator = "error"
 
 [tool.ruff]
 indent-width = 2
+target-version = "py314"
 
 [tool.ruff.lint]
 preview = true
@@ -64,6 +50,3 @@ multiline-quotes = "single"
 
 [tool.ruff.lint.isort]
 lines-after-imports = 2
-
-# [tool.uv.sources]
-# aiodrive = { path = "../aiodrive", editable = true }
