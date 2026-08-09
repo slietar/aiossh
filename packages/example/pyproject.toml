@@ -5,7 +5,7 @@ build-backend = "oryn"
 [project]
 name = "example"
 version = "0.0"
-requires-python = ">=3.14"
+requires-python = "~=3.14"
 dependencies = [
     "aiodrive~=5.1",
     "httpx~=0.28.1",

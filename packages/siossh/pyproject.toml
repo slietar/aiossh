@@ -27,6 +27,3 @@ Repository = "https://github.com/slietar/siossh"
 
 [tool.oryn]
 include = ["src/*"]
-
-[tool.uv.sources]
-aiodrive = { path = "../../../aiodrive", editable = true }
