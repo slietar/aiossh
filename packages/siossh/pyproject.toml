@@ -4,7 +4,7 @@ build-backend = "oryn"
 
 [project]
 name = "siossh"
-version = "0.0"
+version = "1.0"
 description = "Sans-IO SSH server"
 license = "EUPL-1.2"
 readme = "../../readme.md"
