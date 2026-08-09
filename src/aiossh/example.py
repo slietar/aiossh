@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, cast, override
 
 import aiodrive
+import tailscale
 from textual.driver import Driver
 
 from siossh.connection import Connection, ConnectionSettings
@@ -24,6 +25,7 @@ from siossh.integrations.asyncio import (
 
 from .host_keys import get_host_keys
 from .subprocess import PTYSubprocess, RegularSubprocess, Subprocess
+from .tailscale_integration import tailscale_connection
 from .textual_driver import SSHDriver
 from .trains.textual_demo import DemoApp
 
@@ -251,17 +253,40 @@ async def tcp_handler(tcp_connection: aiodrive.Connection):
 
 
 async def main():
+  os.environ['TS_RS_EXPERIMENT'] = 'this_is_unstable_software'
+
   try:
     with aiodrive.handle_signal([signal.SIGINT, signal.SIGTERM]):
-      async with aiodrive.TCPServer.listen(
-        tcp_handler,
-        host=['127.0.0.1', '::1'],
-        port=1302,
-      ) as tcp_server:
-        for binding in tcp_server.bindings:
-          LOGGER.info(f'Listening on {binding}')
+      # async with aiodrive.TCPServer.listen(
+      #   tcp_handler,
+      #   host=['0.0.0.0'],
+      #   port=1302,
+      # ) as tcp_server:
+      #   for binding in tcp_server.bindings:
+      #     LOGGER.info(f'Listening on {binding}')
 
-        await aiodrive.wait_forever()
+      #   await aiodrive.wait_forever()
+
+      # TODO: aiodrive.rooted_task_group()
+      async with aiodrive.volatile_task_group() as group:
+        device = await tailscale.connect(
+          'a.json',
+          auth_key=os.environ['TS_AUTH_KEY'],
+          control_server_url=os.environ['TS_CONTROL_SERVER_URL'],
+        )
+
+        addr = await device.ipv4_addr()
+        print(f'Tailscale device connected with IPv4 address: {addr}')
+
+        listener = await device.tcp_listen(
+          (addr, 22),
+        )
+
+        while True:
+          stream = await listener.accept()
+          group.create_task(tcp_handler(tailscale_connection(stream)))
+
+
   except aiodrive.SignalHandledException as e:
     print('\r', end='')
     LOGGER.info(f'Received {signal.Signals(e.signal).name}')

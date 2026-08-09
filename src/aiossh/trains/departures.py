@@ -28,7 +28,7 @@ async def fetch_departures(
   and should be raised if a wide window is truncated.
   """
 
-  token = token or os.environ['API_TOKEN']
+  token = token or os.environ['SNCF_API_TOKEN']
   stop_area_id = quote(f'stop_area:SNCF:{station_id}')
   url = DEPARTURES_URL_TEMPLATE.format(stop_area_id=stop_area_id)
 

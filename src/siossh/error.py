@@ -1,9 +1,6 @@
 class AlgorithmNegotiationError(Exception):
   pass
 
-class ConnectionClosedError(Exception):
-  pass
-
 class IntegrityVerificationError(Exception):
   pass
 

@@ -1,4 +1,5 @@
 __pycache__
+.envrc
 /env
 /uv.lock
 tmp
