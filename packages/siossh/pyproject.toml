@@ -5,7 +5,10 @@ build-backend = "oryn"
 [project]
 name = "siossh"
 version = "0.0"
-requires-python = ">=3.14"
+description = "Sans-IO SSH server"
+license = "EUPL-1.2"
+readme = "../../readme.md"
+requires-python = "~=3.14"
 dependencies = [
     "cryptography>=49.0",
     "umac~=2.0",
@@ -18,6 +21,9 @@ asyncio = [
 textual = [
     "textual>=8.2.8",
 ]
+
+[project.urls]
+Repository = "https://github.com/slietar/siossh"
 
 [tool.oryn]
 include = ["src/*"]

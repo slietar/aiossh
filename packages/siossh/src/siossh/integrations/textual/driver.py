@@ -1,15 +1,12 @@
 from asyncio import Event
 from codecs import getincrementaldecoder
-from typing import TYPE_CHECKING, Any, Optional, Protocol, override
+from typing import Any, Optional, Protocol, override
 
 from textual import events
 from textual._xterm_parser import XTermParser
+from textual.app import App
 from textual.driver import Driver
 from textual.geometry import Size
-
-
-if TYPE_CHECKING:
-  from textual.app import App
 
 
 class SSHDriverSession(Protocol):

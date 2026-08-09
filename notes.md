@@ -1,4 +1,7 @@
-# Aiossh
+# Siossh notes
+
+
+## Messages
 
 - Open channel: "session"
   - Request: "pty-req"
@@ -21,7 +24,7 @@
 - Global request: "cancel-tcpip-forward"
 
 
-Public keys
+## Public keys
 
 - ssh-rsa (RFC 4253)
   - ssh-rsa (RFC 4253)
@@ -32,8 +35,9 @@ Public keys
   - ssh-ed25519
 
 
-
 ## References
+
+### RFCs
 
 - [RFC 4250](https://datatracker.ietf.org/doc/html/rfc4250)
   <br>The Secure Shell (SSH) Protocol Assigned Numbers
@@ -78,7 +82,7 @@ Public keys
 - [draft-ietf-sshm-chacha20-poly1305-01](https://www.ietf.org/archive/id/draft-ietf-sshm-chacha20-poly1305-01.html)
   <br>Secure Shell (SSH) authenticated encryption cipher: chacha20-poly1305
 
-Other:
+### Other
 
 - [SSH implementation comparison](https://ssh-comparison.quendi.de/comparison/mac.html)
 - [OpenSSH extensions](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL)

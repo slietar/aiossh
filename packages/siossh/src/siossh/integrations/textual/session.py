@@ -3,17 +3,14 @@ import contextlib
 import functools
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional, cast
+from typing import Optional, cast
 
 from siossh.events import SessionShellEvent, Stream
 
+from textual.app import App
 from textual.driver import Driver
 
 from .driver import SSHDriver
-
-
-if TYPE_CHECKING:
-  from textual.app import App
 
 
 LOGGER = logging.getLogger(__name__)

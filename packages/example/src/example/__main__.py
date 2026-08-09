@@ -13,8 +13,7 @@ from typing import Optional, cast, override
 
 import aiodrive
 import tailscale
-from siossh.connection import Connection, ConnectionSettings
-from siossh.events import SessionPTYOptions
+from siossh import Connection, ConnectionSettings, SessionPTYOptions
 from siossh.integrations.asyncio import (
   AsyncConnectionClient,
   AsyncSessionClient,
@@ -27,7 +26,7 @@ from siossh.integrations.asyncio.subprocess import (
   RegularSubprocess,
   Subprocess,
 )
-from siossh.integrations.textual.driver import SSHDriver
+from siossh.integrations.textual import SSHDriver
 from textual.driver import Driver
 
 from .trains.textual_demo import DemoApp
